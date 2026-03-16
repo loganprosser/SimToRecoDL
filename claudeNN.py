@@ -2,7 +2,7 @@
 """
 Simple dense network for track parameter regression.
 
-Predicts 5 PCA track parameters from 15 sim-track features.
+Predicts 5 PCA track parameters from 10 sim-track features.
 All the knobs you'd want to tweak are at the top.
 
 Usage:
@@ -25,15 +25,33 @@ from torch.utils.data import DataLoader, TensorDataset
 #  CONFIGURATION — edit these
 # ═════════════════════════════════════════════════════════════════════════════
 
-DATA_PATH = "./track_cache/track_data_filtered.npz"
+DATA_PATH = "./track_data_etaM1to1.npz"
+
+# ── Expected features & labels (for sanity-checking the .npz) ──────────────
+EXPECTED_FEATURES = [
+    "sim_q",
+    "sim_pdgId",
+    "sim_nValid",
+    "sim_nPixel",
+    "sim_nStrip",
+    "sim_nLay",
+    "sim_nPixelLay",
+    "sim_n3DLay",
+    "sim_nTrackerHits",
+    "sim_nRecoClusters",
+]
+
+EXPECTED_LABELS = [
+    "sim_pca_pt",
+    "sim_pca_eta",
+    "sim_pca_phi",
+    "sim_pca_dxy",
+    "sim_pca_dz",
+]
 
 # ── Network architecture ────────────────────────────────────────────────────
-# Each entry is the width of one hidden layer.  Add/remove entries to
-# change depth.  Examples:
-#   [128, 128]              — 2 hidden layers, 128 wide
-#   [256, 256, 128, 64]     — 4 hidden layers, tapering
-#   [512, 512, 512]         — 3 hidden layers, 512 wide
-HIDDEN_LAYERS = [256, 256, 128]
+# 10 inputs → 5 outputs.  A slightly narrower network is fine here.
+HIDDEN_LAYERS = [128, 128, 64]
 
 ACTIVATION = "relu"          # "relu", "gelu", "silu", "tanh", "leaky_relu"
 DROPOUT = 0.1                # dropout between hidden layers, try 0.1–0.3
@@ -113,6 +131,23 @@ def load_data(path: str, device: torch.device):
     Y = d["Y"].astype(np.float32)
     feat_cols = list(d["feature_columns"])
     label_cols = list(d["label_columns"])
+
+    # ── Sanity check: make sure the .npz matches our expected columns ───
+    if feat_cols != EXPECTED_FEATURES:
+        print(f"WARNING: feature_columns in file don't match EXPECTED_FEATURES")
+        print(f"  file:     {feat_cols}")
+        print(f"  expected: {EXPECTED_FEATURES}")
+    if label_cols != EXPECTED_LABELS:
+        print(f"WARNING: label_columns in file don't match EXPECTED_LABELS")
+        print(f"  file:     {label_cols}")
+        print(f"  expected: {EXPECTED_LABELS}")
+
+    assert X.shape[1] == len(feat_cols), (
+        f"X has {X.shape[1]} cols but feature_columns has {len(feat_cols)} entries"
+    )
+    assert Y.shape[1] == len(label_cols), (
+        f"Y has {Y.shape[1]} cols but label_columns has {len(label_cols)} entries"
+    )
 
     # Shuffle and split
     n = X.shape[0]
@@ -255,7 +290,7 @@ def main():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-        
+
     print(f"Device: {device}")
     print(f"Data:   {data_path}\n")
 
