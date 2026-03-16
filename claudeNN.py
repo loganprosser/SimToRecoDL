@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Simple dense network for track parameter regression.
+Fast dense network for track parameter regression.
 
 Predicts 5 PCA track parameters from 10 sim-track features.
-All the knobs you'd want to tweak are at the top.
 
 Usage:
-    python claudeNN.py [path/to/track_data_filtered.npz]
+    python claudeNN_fast.py [path/to/track_data_filtered.npz]
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -21,82 +21,61 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  CONFIGURATION — edit these
-# ═════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 
 DATA_PATH = "./track_data_etaM1to1.npz"
 
-# ── Expected features & labels (for sanity-checking the .npz) ──────────────
-EXPECTED_FEATURES = [
-    "sim_q",
-    "sim_pdgId",
-    "sim_nValid",
-    "sim_nPixel",
-    "sim_nStrip",
-    "sim_nLay",
-    "sim_nPixelLay",
-    "sim_n3DLay",
-    "sim_nTrackerHits",
-    "sim_nRecoClusters",
-]
-
-EXPECTED_LABELS = [
-    "sim_pca_pt",
-    "sim_pca_eta",
-    "sim_pca_phi",
-    "sim_pca_dxy",
-    "sim_pca_dz",
-]
-
-# ── Network architecture ────────────────────────────────────────────────────
-# 10 inputs → 5 outputs.  A slightly narrower network is fine here.
-HIDDEN_LAYERS = [128, 128, 64]
-
+HIDDEN_LAYERS = [256, 256, 128]
 ACTIVATION = "relu"          # "relu", "gelu", "silu", "tanh", "leaky_relu"
-DROPOUT = 0.1                # dropout between hidden layers, try 0.1–0.3
-BATCH_NORM = True            # batch norm between layers
+DROPOUT = 0.0                # set 0 for max speed first
+BATCH_NORM = True
 
-# ── Training ────────────────────────────────────────────────────────────────
-BATCH_SIZE = 4096
+BATCH_SIZE = 16384           # try 8192 / 16384 / 32768 depending on VRAM
 LEARNING_RATE = 1e-3
-WEIGHT_DECAY = 1e-4          # L2 regularization strength
+WEIGHT_DECAY = 1e-4
 EPOCHS = 50
-OPTIMIZER = "adam"            # "adam", "adamw", "sgd"
+OPTIMIZER = "adamw"          # adamw is a good default
 SCHEDULER = "cosine"         # "cosine", "step", "none"
-STEP_LR_EVERY = 15           # only used if SCHEDULER = "step"
-STEP_LR_GAMMA = 0.5          # only used if SCHEDULER = "step"
+STEP_LR_EVERY = 15
+STEP_LR_GAMMA = 0.5
 
-# ── Data ────────────────────────────────────────────────────────────────────
-VAL_FRACTION = 0.2           # fraction held out for validation
+VAL_FRACTION = 0.2
 SHUFFLE_SEED = 42
-NORMALIZE_INPUTS = True      # z-score normalize features
-NORMALIZE_TARGETS = True     # z-score normalize targets (predictions get
-                             # un-normalized for reporting)
+NORMALIZE_INPUTS = True
+NORMALIZE_TARGETS = True
 
-# ── Output ──────────────────────────────────────────────────────────────────
 SAVE_MODEL = True
 MODEL_PATH = "./track_cache/model.pt"
-PRINT_EVERY = 1              # print metrics every N epochs
+PRINT_EVERY = 1
+
+# DataLoader speed knobs
+NUM_WORKERS = min(8, os.cpu_count() or 1)
+PIN_MEMORY = True
+PERSISTENT_WORKERS = NUM_WORKERS > 0
+PREFETCH_FACTOR = 4 if NUM_WORKERS > 0 else None
+
+# CUDA speed knobs
+USE_AMP = True               # mixed precision on CUDA
+USE_COMPILE = True           # torch.compile for PyTorch 2.x
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  MODEL
-# ═════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# MODEL
+# ============================================================================
 
 def get_activation(name: str) -> nn.Module:
     return {
-        "relu":       nn.ReLU,
-        "gelu":       nn.GELU,
-        "silu":       nn.SiLU,
-        "tanh":       nn.Tanh,
+        "relu": nn.ReLU,
+        "gelu": nn.GELU,
+        "silu": nn.SiLU,
+        "tanh": nn.Tanh,
         "leaky_relu": nn.LeakyReLU,
     }[name]()
 
 
 class TrackNet(nn.Module):
-    """Simple feed-forward regression network, built from config."""
-
     def __init__(self, n_in: int, n_out: int):
         super().__init__()
 
@@ -112,59 +91,44 @@ class TrackNet(nn.Module):
                 layers.append(nn.Dropout(DROPOUT))
             prev = width
 
-        # Final linear head — no activation, raw regression output
         layers.append(nn.Linear(prev, n_out))
-
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  DATA LOADING
-# ═════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# DATA
+# ============================================================================
 
-def load_data(path: str, device: torch.device):
-    d = np.load(path, allow_pickle=False)
-    X = d["X"].astype(np.float32)
-    Y = d["Y"].astype(np.float32)
-    feat_cols = list(d["feature_columns"])
-    label_cols = list(d["label_columns"])
+def load_data(path: str):
+    d = np.load(path, allow_pickle=True)
 
-    # ── Sanity check: make sure the .npz matches our expected columns ───
-    if feat_cols != EXPECTED_FEATURES:
-        print(f"WARNING: feature_columns in file don't match EXPECTED_FEATURES")
-        print(f"  file:     {feat_cols}")
-        print(f"  expected: {EXPECTED_FEATURES}")
-    if label_cols != EXPECTED_LABELS:
-        print(f"WARNING: label_columns in file don't match EXPECTED_LABELS")
-        print(f"  file:     {label_cols}")
-        print(f"  expected: {EXPECTED_LABELS}")
+    X = d["X"].astype(np.float32, copy=False)
+    Y = d["Y"].astype(np.float32, copy=False)
+    feat_cols = list(d["feature_names"])
+    label_cols = list(d["label_names"])
 
-    assert X.shape[1] == len(feat_cols), (
-        f"X has {X.shape[1]} cols but feature_columns has {len(feat_cols)} entries"
-    )
-    assert Y.shape[1] == len(label_cols), (
-        f"Y has {Y.shape[1]} cols but label_columns has {len(label_cols)} entries"
-    )
-
-    # Shuffle and split
     n = X.shape[0]
     rng = np.random.default_rng(SHUFFLE_SEED)
     idx = rng.permutation(n)
     split = int(n * (1 - VAL_FRACTION))
 
-    X_train, X_val = X[idx[:split]], X[idx[split:]]
-    Y_train, Y_val = Y[idx[:split]], Y[idx[split:]]
+    train_idx = idx[:split]
+    val_idx = idx[split:]
 
-    # Normalize
+    X_train = X[train_idx]
+    Y_train = Y[train_idx]
+    X_val = X[val_idx]
+    Y_val = Y[val_idx]
+
     x_mean = x_std = y_mean = y_std = None
 
     if NORMALIZE_INPUTS:
         x_mean = X_train.mean(axis=0)
         x_std = X_train.std(axis=0)
-        x_std[x_std < 1e-8] = 1.0  # avoid div-by-zero for constant cols
+        x_std[x_std < 1e-8] = 1.0
         X_train = (X_train - x_mean) / x_std
         X_val = (X_val - x_mean) / x_std
 
@@ -175,39 +139,70 @@ def load_data(path: str, device: torch.device):
         Y_train = (Y_train - y_mean) / y_std
         Y_val = (Y_val - y_mean) / y_std
 
-    # To tensors
-    Xt = torch.from_numpy(X_train).to(device)
-    Yt = torch.from_numpy(Y_train).to(device)
-    Xv = torch.from_numpy(X_val).to(device)
-    Yv = torch.from_numpy(Y_val).to(device)
+    # Keep tensors on CPU. Move batch-by-batch to GPU in training loop.
+    train_ds = TensorDataset(
+        torch.from_numpy(X_train),
+        torch.from_numpy(Y_train),
+    )
+    val_ds = TensorDataset(
+        torch.from_numpy(X_val),
+        torch.from_numpy(Y_val),
+    )
 
-    train_ds = TensorDataset(Xt, Yt)
-    val_ds = TensorDataset(Xv, Yv)
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        drop_last=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY,
+        persistent_workers=PERSISTENT_WORKERS,
+        prefetch_factor=PREFETCH_FACTOR,
+    )
 
-    train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
-                          drop_last=False)
-    val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE * 2, shuffle=False)
+    val_dl = DataLoader(
+        val_ds,
+        batch_size=BATCH_SIZE * 2,
+        shuffle=False,
+        drop_last=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY,
+        persistent_workers=PERSISTENT_WORKERS,
+        prefetch_factor=PREFETCH_FACTOR,
+    )
 
     norm = {
-        "x_mean": x_mean, "x_std": x_std,
-        "y_mean": y_mean, "y_std": y_std,
+        "x_mean": x_mean,
+        "x_std": x_std,
+        "y_mean": y_mean,
+        "y_std": y_std,
     }
 
     return train_dl, val_dl, feat_cols, label_cols, norm
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  TRAINING
-# ═════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# OPTIMIZER / SCHEDULER
+# ============================================================================
 
 def make_optimizer(model: nn.Module) -> torch.optim.Optimizer:
     opts = {
-        "adam":  lambda: torch.optim.Adam(model.parameters(), lr=LEARNING_RATE,
-                                          weight_decay=WEIGHT_DECAY),
-        "adamw": lambda: torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE,
-                                           weight_decay=WEIGHT_DECAY),
-        "sgd":   lambda: torch.optim.SGD(model.parameters(), lr=LEARNING_RATE,
-                                         momentum=0.9, weight_decay=WEIGHT_DECAY),
+        "adam": lambda: torch.optim.Adam(
+            model.parameters(),
+            lr=LEARNING_RATE,
+            weight_decay=WEIGHT_DECAY,
+        ),
+        "adamw": lambda: torch.optim.AdamW(
+            model.parameters(),
+            lr=LEARNING_RATE,
+            weight_decay=WEIGHT_DECAY,
+        ),
+        "sgd": lambda: torch.optim.SGD(
+            model.parameters(),
+            lr=LEARNING_RATE,
+            momentum=0.9,
+            weight_decay=WEIGHT_DECAY,
+        ),
     }
     return opts[OPTIMIZER]()
 
@@ -216,60 +211,99 @@ def make_scheduler(optimizer):
     if SCHEDULER == "cosine":
         return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     if SCHEDULER == "step":
-        return torch.optim.lr_scheduler.StepLR(optimizer,
-                                                step_size=STEP_LR_EVERY,
-                                                gamma=STEP_LR_GAMMA)
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=STEP_LR_EVERY,
+            gamma=STEP_LR_GAMMA,
+        )
     return None
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device):
+# ============================================================================
+# TRAIN / VALIDATE
+# ============================================================================
+
+def train_one_epoch(model, loader, criterion, optimizer, device, scaler, use_amp):
     model.train()
     total_loss = 0.0
     n = 0
+
     for xb, yb in loader:
-        pred = model(xb)
-        loss = criterion(pred, yb)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        xb = xb.to(device, non_blocking=True)
+        yb = yb.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        if use_amp:
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                pred = model(xb)
+                loss = criterion(pred, yb)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            pred = model(xb)
+            loss = criterion(pred, yb)
+            loss.backward()
+            optimizer.step()
+
         total_loss += loss.item() * xb.shape[0]
         n += xb.shape[0]
+
     return total_loss / n
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device):
+def validate(model, loader, criterion, device, use_amp):
     model.eval()
     total_loss = 0.0
     n = 0
+
     for xb, yb in loader:
-        pred = model(xb)
-        loss = criterion(pred, yb)
+        xb = xb.to(device, non_blocking=True)
+        yb = yb.to(device, non_blocking=True)
+
+        if use_amp:
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                pred = model(xb)
+                loss = criterion(pred, yb)
+        else:
+            pred = model(xb)
+            loss = criterion(pred, yb)
+
         total_loss += loss.item() * xb.shape[0]
         n += xb.shape[0]
+
     return total_loss / n
 
 
 @torch.no_grad()
-def per_target_metrics(model, loader, label_cols, norm, device):
-    """Compute MAE and RMSE per target in original (un-normalized) units."""
+def per_target_metrics(model, loader, label_cols, norm, device, use_amp):
     model.eval()
     all_pred = []
     all_true = []
+
     for xb, yb in loader:
-        all_pred.append(model(xb).cpu().numpy())
-        all_true.append(yb.cpu().numpy())
+        xb = xb.to(device, non_blocking=True)
+
+        if use_amp:
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                pred = model(xb)
+        else:
+            pred = model(xb)
+
+        all_pred.append(pred.cpu().numpy())
+        all_true.append(yb.numpy())
 
     pred = np.concatenate(all_pred, axis=0)
     true = np.concatenate(all_true, axis=0)
 
-    # Un-normalize if needed
     if norm["y_mean"] is not None:
         pred = pred * norm["y_std"] + norm["y_mean"]
         true = true * norm["y_std"] + norm["y_mean"]
 
     print(f"\n  {'target':>22s}  {'MAE':>12s}  {'RMSE':>12s}")
-    print(f"  {'─'*22}  {'─'*12}  {'─'*12}")
+    print(f"  {'-'*22}  {'-'*12}  {'-'*12}")
     for i, name in enumerate(label_cols):
         diff = pred[:, i] - true[:, i]
         mae = np.abs(diff).mean()
@@ -277,9 +311,9 @@ def per_target_metrics(model, loader, label_cols, norm, device):
         print(f"  {name:>22s}  {mae:12.6f}  {rmse:12.6f}")
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  MAIN
-# ═════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# MAIN
+# ============================================================================
 
 def main():
     data_path = sys.argv[1] if len(sys.argv) > 1 else DATA_PATH
@@ -292,44 +326,57 @@ def main():
         device = torch.device("cpu")
 
     print(f"Device: {device}")
-    print(f"Data:   {data_path}\n")
+    print(f"Data:   {data_path}")
 
-    # Load
-    train_dl, val_dl, feat_cols, label_cols, norm = load_data(data_path, device)
+    if device.type == "cuda":
+        print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
+
+    train_dl, val_dl, feat_cols, label_cols, norm = load_data(data_path)
+
     n_in = len(feat_cols)
     n_out = len(label_cols)
     n_train = len(train_dl.dataset)
     n_val = len(val_dl.dataset)
 
-    print(f"Samples: {n_train:,} train, {n_val:,} val")
-    print(f"Input:   {n_in} features → {feat_cols}")
-    print(f"Output:  {n_out} targets  → {label_cols}")
+    print(f"\nSamples: {n_train:,} train, {n_val:,} val")
+    print(f"Input:   {n_in} features")
+    print(f"Output:  {n_out} targets")
 
-    # Model
     model = TrackNet(n_in, n_out).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"\nModel:  {n_params:,} parameters")
-    print(model)
 
-    # Training setup
+    if USE_COMPILE and hasattr(torch, "compile"):
+        model = torch.compile(model)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"\nModel parameters: {n_params:,}")
+
     criterion = nn.MSELoss()
     optimizer = make_optimizer(model)
     scheduler = make_scheduler(optimizer)
 
-    print(f"\nOptimizer:  {OPTIMIZER}  lr={LEARNING_RATE}  wd={WEIGHT_DECAY}")
+    use_amp = USE_AMP and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    print(f"\nOptimizer:  {OPTIMIZER}")
     print(f"Scheduler:  {SCHEDULER}")
     print(f"Batch size: {BATCH_SIZE}")
+    print(f"Workers:    {NUM_WORKERS}")
+    print(f"AMP:        {use_amp}")
+    print(f"Compile:    {USE_COMPILE and hasattr(torch, 'compile')}")
     print(f"Epochs:     {EPOCHS}\n")
 
-    # Train
     best_val = float("inf")
     t0 = time.time()
 
     for epoch in range(1, EPOCHS + 1):
         t_epoch = time.time()
 
-        train_loss = train_one_epoch(model, train_dl, criterion, optimizer, device)
-        val_loss = validate(model, val_dl, criterion, device)
+        train_loss = train_one_epoch(
+            model, train_dl, criterion, optimizer, device, scaler, use_amp
+        )
+        val_loss = validate(model, val_dl, criterion, device, use_amp)
 
         if scheduler is not None:
             scheduler.step()
@@ -338,28 +385,33 @@ def main():
         if improved:
             best_val = val_loss
             if SAVE_MODEL:
-                torch.save({
-                    "model_state": model.state_dict(),
-                    "config": {
-                        "n_in": n_in, "n_out": n_out,
-                        "hidden_layers": HIDDEN_LAYERS,
-                        "activation": ACTIVATION,
-                        "dropout": DROPOUT,
-                        "batch_norm": BATCH_NORM,
+                Path(MODEL_PATH).parent.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    {
+                        "model_state": model.state_dict(),
+                        "config": {
+                            "n_in": n_in,
+                            "n_out": n_out,
+                            "hidden_layers": HIDDEN_LAYERS,
+                            "activation": ACTIVATION,
+                            "dropout": DROPOUT,
+                            "batch_norm": BATCH_NORM,
+                        },
+                        "norm": norm,
+                        "feature_columns": feat_cols,
+                        "label_columns": label_cols,
+                        "epoch": epoch,
+                        "val_loss": val_loss,
                     },
-                    "norm": norm,
-                    "feature_columns": feat_cols,
-                    "label_columns": label_cols,
-                    "epoch": epoch,
-                    "val_loss": val_loss,
-                }, MODEL_PATH)
+                    MODEL_PATH,
+                )
 
         if epoch % PRINT_EVERY == 0 or epoch == 1:
             lr = optimizer.param_groups[0]["lr"]
             dt = time.time() - t_epoch
             star = " *" if improved else ""
             print(
-                f"  epoch {epoch:3d}/{EPOCHS} | "
+                f"epoch {epoch:3d}/{EPOCHS} | "
                 f"train {train_loss:.6f} | "
                 f"val {val_loss:.6f}{star} | "
                 f"lr {lr:.2e} | "
@@ -370,11 +422,11 @@ def main():
     print(f"\nTraining complete in {elapsed:.1f}s")
     print(f"Best val loss: {best_val:.6f}")
 
-    # Per-target breakdown on validation set
     if SAVE_MODEL:
-        ckpt = torch.load(MODEL_PATH, weights_only=False)
+        ckpt = torch.load(MODEL_PATH, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state"])
-    per_target_metrics(model, val_dl, label_cols, norm, device)
+
+    per_target_metrics(model, val_dl, label_cols, norm, device, use_amp)
 
     if SAVE_MODEL:
         print(f"\nModel saved to {MODEL_PATH}")
