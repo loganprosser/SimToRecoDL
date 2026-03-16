@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build a row-aligned track cache from all ROOT files in one directory.
+Build a row-aligned SIM-track cache from all ROOT files in one directory.
 
 Edit the CONSTANTS block below, then run:
     python root_to_track_cache_constants.py
@@ -8,7 +8,7 @@ Edit the CONSTANTS block below, then run:
 This script:
 - finds every .root file in INPUT_DIR
 - reads one tree from each file
-- matches reco tracks to sim tracks using the configured match branches
+- loops over SIM tracks only (no reco matching)
 - stores a row-wise cache (parquet if available, otherwise HDF5)
 - stores PyTorch-ready feature/label arrays as .npy files
 
@@ -21,6 +21,7 @@ Design goal:
 from __future__ import annotations
 
 import json
+import math
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -46,32 +47,53 @@ TREE_PATH = "trackingNtuple/tree"     # full tree path inside each ROOT file
 OUTDIR = "./track_cache"              # where cache + arrays will be written
 
 # Parallelism
-N_WORKERS = max(1, (os.cpu_count() or 1) // 2)
-CHUNK_SIZE = 200                       # entries per job inside each file
+N_WORKERS = 16
+CHUNK_SIZE = 1000                     # entries per job inside each file
 
-# Matching
-MATCH_INDEX_BRANCH = "trk_bestSimTrkIdx"
-MATCH_SHARE_BRANCH = "trk_bestSimTrkShareFrac"
-MIN_SHARE_FRAC = 0.75
-KEEP_UNMATCHED = False
-
-# Columns to save
-RECO_BRANCHES = [
-    "trk_pt",
-    "trk_eta",
-    "trk_phi",
-]
-
-SIM_BRANCHES = [
+# Input columns: these are the per-sim-track features the network will see
+INPUT_BRANCHES = [
+    "sim_px",
+    "sim_py",
+    "sim_pz",
     "sim_pt",
     "sim_eta",
     "sim_phi",
-    "sim_qoverp",
-    "sim_dxy",
+    "sim_q",
+    "sim_nValid",
+    "sim_nPixel",
+    "sim_nStrip",
+    "sim_nLay",
+    "sim_nPixelLay",
+    "sim_n3DLay",
+    "sim_nTrackerHits",
+    "sim_nRecoClusters",
 ]
 
+# Target mode:
+#   "qoverpt_lambda_phi_dxy_dz"  -> [q/pt, lambda, phi, dxy, dz]
+#   "pt_eta_phi_dxy_dz"          -> [pt, eta, phi, dxy, dz]
+#   "pt_lambda_phi_dxy_dz"       -> [pt, lambda, phi, dxy, dz]
+TARGET_MODE = "qoverpt_lambda_phi_dxy_dz"
+
+# These are the source branches used to build targets.
+# Leave them here even if your final label vector is only length 5.
+TARGET_SOURCE_BRANCHES = [
+    "sim_q",
+    "sim_pca_pt",
+    "sim_pca_eta",
+    "sim_pca_lambda",
+    "sim_pca_phi",
+    "sim_pca_dxy",
+    "sim_pca_dz",
+]
+
+# Optional cuts / cleaning
+DROP_NONFINITE = True
+MIN_SIM_PT = None          # e.g. 0.5
+MAX_ABS_SIM_ETA = None     # e.g. 2.5
+
 # Output behavior
-SORT_BY = ["source_file", "event_id", "reco_idx"]
+SORT_BY = ["source_file", "event_id", "sim_idx"]
 PREFER_PARQUET = True
 
 
@@ -139,6 +161,58 @@ def branch_to_numpy_int(x) -> np.ndarray:
     return out
 
 
+def get_event_id(tree, entry_idx: int) -> int:
+    for candidate in ("event", "event_id", "evt"):
+        if hasattr(tree, candidate):
+            try:
+                return int(getattr(tree, candidate))
+            except Exception:
+                pass
+    return int(entry_idx)
+
+
+def build_target_row(payload: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    q = payload["sim_q"].astype(np.float32)
+    pt = payload["sim_pca_pt"].astype(np.float32)
+    eta = payload["sim_pca_eta"].astype(np.float32)
+    lam = payload["sim_pca_lambda"].astype(np.float32)
+    phi = payload["sim_pca_phi"].astype(np.float32)
+    dxy = payload["sim_pca_dxy"].astype(np.float32)
+    dz = payload["sim_pca_dz"].astype(np.float32)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        qoverpt = q / pt
+
+    if TARGET_MODE == "qoverpt_lambda_phi_dxy_dz":
+        return {
+            "target_qoverpt": qoverpt,
+            "target_lambda": lam,
+            "target_phi": phi,
+            "target_dxy": dxy,
+            "target_dz": dz,
+        }
+
+    if TARGET_MODE == "pt_eta_phi_dxy_dz":
+        return {
+            "target_pt": pt,
+            "target_eta": eta,
+            "target_phi": phi,
+            "target_dxy": dxy,
+            "target_dz": dz,
+        }
+
+    if TARGET_MODE == "pt_lambda_phi_dxy_dz":
+        return {
+            "target_pt": pt,
+            "target_lambda": lam,
+            "target_phi": phi,
+            "target_dxy": dxy,
+            "target_dz": dz,
+        }
+
+    raise ValueError(f"Unknown TARGET_MODE: {TARGET_MODE}")
+
+
 # ---------- Worker logic ----------
 
 def process_chunk(args: Tuple) -> Dict[str, np.ndarray]:
@@ -147,13 +221,16 @@ def process_chunk(args: Tuple) -> Dict[str, np.ndarray]:
         tree_path,
         start,
         end,
-        reco_branches,
-        sim_branches,
-        match_index_branch,
-        match_share_branch,
-        min_share_frac,
-        keep_unmatched,
+        input_branches,
+        target_source_branches,
+        target_mode,
+        drop_nonfinite,
+        min_sim_pt,
+        max_abs_sim_eta,
     ) = args
+
+    global TARGET_MODE
+    TARGET_MODE = target_mode
 
     f, tree = open_tree(root_path, tree_path)
 
@@ -161,82 +238,95 @@ def process_chunk(args: Tuple) -> Dict[str, np.ndarray]:
         "source_file": [],
         "entry": [],
         "event_id": [],
-        "reco_idx": [],
         "sim_idx": [],
-        "match_share_frac": [],
-        "is_matched": [],
     }
-    for b in reco_branches:
-        rows[f"reco__{b}"] = []
-    for b in sim_branches:
-        rows[f"sim__{b}"] = []
+
+    for b in input_branches:
+        rows[b] = []
+
+    target_names = {
+        "qoverpt_lambda_phi_dxy_dz": [
+            "target_qoverpt", "target_lambda", "target_phi", "target_dxy", "target_dz"
+        ],
+        "pt_eta_phi_dxy_dz": [
+            "target_pt", "target_eta", "target_phi", "target_dxy", "target_dz"
+        ],
+        "pt_lambda_phi_dxy_dz": [
+            "target_pt", "target_lambda", "target_phi", "target_dxy", "target_dz"
+        ],
+    }[target_mode]
+
+    for name in target_names:
+        rows[name] = []
+
+    needed_branches = set(input_branches) | set(target_source_branches)
 
     for entry_idx in range(start, end):
         tree.GetEntry(entry_idx)
+        event_id = get_event_id(tree, entry_idx)
 
-        try:
-            match_idx = branch_to_numpy_int(getattr(tree, match_index_branch))
-            share_frac = branch_to_numpy_float(getattr(tree, match_share_branch))
-        except AttributeError as exc:
+        payload: Dict[str, np.ndarray] = {}
+
+        for b in needed_branches:
+            if not hasattr(tree, b):
+                f.Close()
+                raise RuntimeError(f"Missing branch '{b}' in {root_path}")
+
+            obj = getattr(tree, b)
+
+            if b == "sim_q":
+                payload[b] = branch_to_numpy_int(obj).astype(np.float32)
+            else:
+                payload[b] = branch_to_numpy_float(obj)
+
+        if "sim_pt" not in payload:
             f.Close()
-            raise RuntimeError(
-                f"Missing matching branch in {root_path}: {exc}. "
-                f"Expected '{match_index_branch}' and '{match_share_branch}'."
-            ) from exc
+            raise RuntimeError(f"Missing required branch 'sim_pt' in {root_path}")
 
-        reco_payload = {}
-        for b in reco_branches:
-            try:
-                reco_payload[b] = branch_to_numpy_float(getattr(tree, b))
-            except AttributeError as exc:
-                f.Close()
-                raise RuntimeError(f"Missing reco branch '{b}' in {root_path}") from exc
-
-        sim_payload = {}
-        for b in sim_branches:
-            try:
-                sim_payload[b] = branch_to_numpy_float(getattr(tree, b))
-            except AttributeError as exc:
-                f.Close()
-                raise RuntimeError(f"Missing sim branch '{b}' in {root_path}") from exc
-
-        n_reco = len(match_idx)
-        if n_reco == 0:
+        n_sim = len(payload["sim_pt"])
+        if n_sim == 0:
             continue
 
-        event_id = entry_idx
-        for candidate in ("event", "event_id", "evt"):
-            if hasattr(tree, candidate):
-                try:
-                    event_id = int(getattr(tree, candidate))
-                    break
-                except Exception:
-                    pass
+        # Basic consistency check: all branches should have same per-event length
+        for b, arr in payload.items():
+            if len(arr) != n_sim:
+                f.Close()
+                raise RuntimeError(
+                    f"Length mismatch in {root_path}, entry {entry_idx}: "
+                    f"branch '{b}' has len {len(arr)} but sim_pt has len {n_sim}"
+                )
 
-        for i_reco in range(n_reco):
-            j_sim = int(match_idx[i_reco])
-            frac = float(share_frac[i_reco])
-            matched = (j_sim >= 0) and (frac >= min_share_frac)
+        target_payload = build_target_row(payload)
 
-            if (not matched) and (not keep_unmatched):
+        for i_sim in range(n_sim):
+            # optional cuts
+            if min_sim_pt is not None and float(payload["sim_pt"][i_sim]) < float(min_sim_pt):
+                continue
+
+            if max_abs_sim_eta is not None and abs(float(payload["sim_eta"][i_sim])) > float(max_abs_sim_eta):
+                continue
+
+            row_values = []
+
+            for b in input_branches:
+                row_values.append(float(payload[b][i_sim]))
+
+            for name in target_names:
+                row_values.append(float(target_payload[name][i_sim]))
+
+            if drop_nonfinite and not np.isfinite(np.asarray(row_values, dtype=np.float32)).all():
                 continue
 
             rows["source_file"].append(str(root_path))
             rows["entry"].append(int(entry_idx))
             rows["event_id"].append(int(event_id))
-            rows["reco_idx"].append(int(i_reco))
-            rows["sim_idx"].append(int(j_sim if matched else -1))
-            rows["match_share_frac"].append(frac)
-            rows["is_matched"].append(int(matched))
+            rows["sim_idx"].append(int(i_sim))
 
-            for b in reco_branches:
-                rows[f"reco__{b}"].append(float(reco_payload[b][i_reco]))
+            for b in input_branches:
+                rows[b].append(float(payload[b][i_sim]))
 
-            for b in sim_branches:
-                if matched and 0 <= j_sim < len(sim_payload[b]):
-                    rows[f"sim__{b}"].append(float(sim_payload[b][j_sim]))
-                else:
-                    rows[f"sim__{b}"].append(np.nan)
+            for name in target_names:
+                rows[name].append(float(target_payload[name][i_sim]))
 
     f.Close()
 
@@ -244,7 +334,7 @@ def process_chunk(args: Tuple) -> Dict[str, np.ndarray]:
     for key, values in rows.items():
         if key == "source_file":
             continue
-        if key in {"entry", "event_id", "reco_idx", "sim_idx", "is_matched"}:
+        if key in {"entry", "event_id", "sim_idx"}:
             out[key] = np.asarray(values, dtype=np.int64)
         else:
             out[key] = np.asarray(values, dtype=np.float32)
@@ -276,9 +366,19 @@ def save_row_cache(df: pd.DataFrame, outdir: Path, prefer_parquet: bool) -> Path
     return path
 
 
-def build_xy(df: pd.DataFrame, reco_branches: Sequence[str], sim_branches: Sequence[str]):
-    feature_cols = [f"reco__{b}" for b in reco_branches]
-    label_cols = [f"sim__{b}" for b in sim_branches]
+def get_label_columns(target_mode: str) -> List[str]:
+    if target_mode == "qoverpt_lambda_phi_dxy_dz":
+        return ["target_qoverpt", "target_lambda", "target_phi", "target_dxy", "target_dz"]
+    if target_mode == "pt_eta_phi_dxy_dz":
+        return ["target_pt", "target_eta", "target_phi", "target_dxy", "target_dz"]
+    if target_mode == "pt_lambda_phi_dxy_dz":
+        return ["target_pt", "target_lambda", "target_phi", "target_dxy", "target_dz"]
+    raise ValueError(f"Unknown TARGET_MODE: {target_mode}")
+
+
+def build_xy(df: pd.DataFrame, input_branches: Sequence[str], target_mode: str):
+    feature_cols = list(input_branches)
+    label_cols = get_label_columns(target_mode)
 
     if df.empty:
         return (
@@ -307,13 +407,13 @@ def discover_root_files(input_dir: str, file_glob: str) -> List[str]:
 def make_jobs(
     input_files: Sequence[str],
     tree_path: str,
-    reco_branches: Sequence[str],
-    sim_branches: Sequence[str],
-    match_index_branch: str,
-    match_share_branch: str,
-    min_share_frac: float,
-    keep_unmatched: bool,
+    input_branches: Sequence[str],
+    target_source_branches: Sequence[str],
+    target_mode: str,
     chunk_size: int,
+    drop_nonfinite: bool,
+    min_sim_pt,
+    max_abs_sim_eta,
 ) -> List[Tuple]:
     jobs: List[Tuple] = []
     for root_path in input_files:
@@ -329,12 +429,12 @@ def make_jobs(
                     tree_path,
                     start,
                     end,
-                    tuple(reco_branches),
-                    tuple(sim_branches),
-                    match_index_branch,
-                    match_share_branch,
-                    float(min_share_frac),
-                    bool(keep_unmatched),
+                    tuple(input_branches),
+                    tuple(target_source_branches),
+                    target_mode,
+                    bool(drop_nonfinite),
+                    min_sim_pt,
+                    max_abs_sim_eta,
                 )
             )
     return jobs
@@ -351,13 +451,13 @@ def main() -> None:
     jobs = make_jobs(
         input_files=input_files,
         tree_path=TREE_PATH,
-        reco_branches=RECO_BRANCHES,
-        sim_branches=SIM_BRANCHES,
-        match_index_branch=MATCH_INDEX_BRANCH,
-        match_share_branch=MATCH_SHARE_BRANCH,
-        min_share_frac=MIN_SHARE_FRAC,
-        keep_unmatched=KEEP_UNMATCHED,
+        input_branches=INPUT_BRANCHES,
+        target_source_branches=TARGET_SOURCE_BRANCHES,
+        target_mode=TARGET_MODE,
         chunk_size=CHUNK_SIZE,
+        drop_nonfinite=DROP_NONFINITE,
+        min_sim_pt=MIN_SIM_PT,
+        max_abs_sim_eta=MAX_ABS_SIM_ETA,
     )
 
     print(f"Found {len(input_files)} ROOT file(s) in {Path(INPUT_DIR).resolve()}")
@@ -388,11 +488,10 @@ def main() -> None:
     row_cache_path = save_row_cache(df, outdir=outdir, prefer_parquet=PREFER_PARQUET)
     print(f"Saved row cache to {row_cache_path}")
 
-    matched_df = df[df["is_matched"] == 1].copy()
     X, Y, feature_cols, label_cols = build_xy(
-        matched_df,
-        reco_branches=RECO_BRANCHES,
-        sim_branches=SIM_BRANCHES,
+        df,
+        input_branches=INPUT_BRANCHES,
+        target_mode=TARGET_MODE,
     )
 
     np.save(outdir / "features.npy", X)
@@ -405,19 +504,18 @@ def main() -> None:
         "tree": TREE_PATH,
         "n_files": len(input_files),
         "n_rows_total": int(len(df)),
-        "n_rows_matched": int((df["is_matched"] == 1).sum()),
         "n_features": int(X.shape[1]),
         "n_labels": int(Y.shape[1]),
         "feature_columns": feature_cols,
         "label_columns": label_cols,
-        "reco_branches": list(RECO_BRANCHES),
-        "sim_branches": list(SIM_BRANCHES),
-        "min_share_frac": float(MIN_SHARE_FRAC),
-        "match_index_branch": MATCH_INDEX_BRANCH,
-        "match_share_branch": MATCH_SHARE_BRANCH,
+        "input_branches": list(INPUT_BRANCHES),
+        "target_mode": TARGET_MODE,
+        "target_source_branches": list(TARGET_SOURCE_BRANCHES),
         "chunk_size": int(CHUNK_SIZE),
         "n_workers": int(N_WORKERS),
-        "keep_unmatched": bool(KEEP_UNMATCHED),
+        "drop_nonfinite": bool(DROP_NONFINITE),
+        "min_sim_pt": MIN_SIM_PT,
+        "max_abs_sim_eta": MAX_ABS_SIM_ETA,
     }
     with open(outdir / "column_metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
