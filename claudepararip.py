@@ -30,14 +30,15 @@ import numpy as np
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-ROOT_FILE_NAME = "event_2000"
+ROOT_FILE_NUM = "3000"
+ROOT_FILE_NAME = f"event_{ROOT_FILE_NUM}"
 
 ROOT_FILE = (
     "/data2/segmentlinking/CMSSW_12_5_0_pre3/"
     f"RelValTTbar_14TeV_CMSSW_12_5_0_pre3/{ROOT_FILE_NAME}.root"
 )
 TREE_PATH = "trackingNtuple/tree"
-OUTDIR = f"./track_cache_{ROOT_FILE_NAME}"
+OUTDIR = f"./{ROOT_FILE_NUM}_track_cache"
 
 # Workers: each opens its own TFile, so memory scales with this.
 # 32 is a good sweet spot on a 92-core box — ROOT I/O is the bottleneck,
