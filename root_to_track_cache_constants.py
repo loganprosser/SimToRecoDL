@@ -41,7 +41,7 @@ except Exception as exc:  # pragma: no cover
 # =========================
 # CONSTANTS: EDIT THESE
 # =========================
-INPUT_DIR = "."                       # directory containing your ROOT files
+INPUT_DIR = "/data2/segmentlinking/CMSSW_12_5_0_pre3/RelValTTbar_14TeV_CMSSW_12_5_0_pre3"                       # directory containing your ROOT files
 FILE_GLOB = "*.root"                  # which ROOT files to include
 TREE_PATH = "trackingNtuple/tree"     # full tree path inside each ROOT file
 OUTDIR = "./track_cache"              # where cache + arrays will be written
