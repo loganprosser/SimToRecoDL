@@ -52,7 +52,7 @@ except Exception as exc:  # pragma: no cover
 # CONSTANTS: EDIT THESE
 # =========================
 INPUT_DIR = "/data2/segmentlinking/CMSSW_12_5_0_pre3/RelValTTbar_14TeV_CMSSW_12_5_0_pre3"
-FILE_GLOB = "*.root"
+FILE_GLOB = "event_1000.root"
 TREE_PATH = "trackingNtuple/tree"
 OUTDIR = "./track_cache"
 
