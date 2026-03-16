@@ -6,7 +6,7 @@ Predicts 5 PCA track parameters from 15 sim-track features.
 All the knobs you'd want to tweak are at the top.
 
 Usage:
-    python train.py [path/to/track_data_filtered.npz]
+    python claudeNN.py [path/to/track_data_filtered.npz]
 """
 
 from __future__ import annotations
@@ -249,7 +249,13 @@ def per_target_metrics(model, loader, label_cols, norm, device):
 def main():
     data_path = sys.argv[1] if len(sys.argv) > 1 else DATA_PATH
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+        
     print(f"Device: {device}")
     print(f"Data:   {data_path}\n")
 
