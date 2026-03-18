@@ -28,13 +28,22 @@ from torch.utils.data import DataLoader, TensorDataset
 DATA_PATH = "./track_data_etaM1to1.npz"
 
 HIDDEN_LAYERS = [256, 256, 128]
-ACTIVATION = "relu"          # "relu", "gelu", "silu", "tanh", "leaky_relu"
+ACTIVATION = "tanh"          # "relu", "gelu", "silu", "tanh", "leaky_relu"
 DROPOUT = 0.0                # set 0 for max speed first
 BATCH_NORM = True
 
-BATCH_SIZE = 16384           # try 8192 / 16384 / 32768 depending on VRAM
+BATCH_SIZE = 32768           # try 8192 / 16384 / 32768 depending on VRAM
 LEARNING_RATE = 1e-3
-WEIGHT_DECAY = 1e-4
+
+# Regularization
+WEIGHT_DECAY = 0.0           # optimizer-level decay
+L1_LAMBDA = 0.0              # explicit L1 penalty in loss
+L2_LAMBDA = 0.0              # explicit L2 penalty in loss
+REG_ON_BIAS = False          # usually False
+REG_ON_BATCHNORM = False     # usually False
+
+
+
 EPOCHS = 50
 OPTIMIZER = "adamw"          # adamw is a good default
 SCHEDULER = "cosine"         # "cosine", "step", "none"
@@ -51,7 +60,7 @@ MODEL_PATH = "./track_cache/model.pt"
 PRINT_EVERY = 1
 
 # DataLoader speed knobs
-NUM_WORKERS = min(8, os.cpu_count() or 1)
+NUM_WORKERS = 14              #min(8, os.cpu_count() or 1)
 PIN_MEMORY = True
 PERSISTENT_WORKERS = NUM_WORKERS > 0
 PREFETCH_FACTOR = 4 if NUM_WORKERS > 0 else None
@@ -60,10 +69,44 @@ PREFETCH_FACTOR = 4 if NUM_WORKERS > 0 else None
 USE_AMP = True               # mixed precision on CUDA
 USE_COMPILE = True           # torch.compile for PyTorch 2.x
 
+# ==== HELPERS ======
+def regularization_loss(
+    model: nn.Module,
+    l1_lambda: float = 0.0,
+    l2_lambda: float = 0.0,
+    reg_on_bias: bool = False,
+    reg_on_batchnorm: bool = False,
+) -> torch.Tensor:
+    reg_loss = None
 
-# ============================================================================
-# MODEL
-# ============================================================================
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        # Skip bias unless requested
+        if not reg_on_bias and name.endswith(".bias"):
+            continue
+
+        # Skip batchnorm params unless requested
+        if not reg_on_batchnorm and ("bn" in name.lower() or "batchnorm" in name.lower()):
+            continue
+
+        term = 0.0
+
+        if l1_lambda > 0:
+            term = term + l1_lambda * param.abs().sum()
+
+        if l2_lambda > 0:
+            term = term + l2_lambda * param.pow(2).sum()
+
+        if term != 0.0:
+            reg_loss = term if reg_loss is None else reg_loss + term
+
+    if reg_loss is None:
+        device = next(model.parameters()).device
+        return torch.tensor(0.0, device=device)
+
+    return reg_loss
 
 def get_activation(name: str) -> nn.Module:
     return {
@@ -74,6 +117,10 @@ def get_activation(name: str) -> nn.Module:
         "leaky_relu": nn.LeakyReLU,
     }[name]()
 
+
+# ============================================================================
+# MODEL
+# ============================================================================
 
 class TrackNet(nn.Module):
     def __init__(self, n_in: int, n_out: int):
@@ -92,11 +139,204 @@ class TrackNet(nn.Module):
             prev = width
 
         layers.append(nn.Linear(prev, n_out))
-        self.net = nn.Sequential(*layers)
+        self.net = nn.Sequential(*layers) #links together so we can just call self.net() for foward pass
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
+class TrackLossInd(nn.Module):
+    
+    def __init__(self, label_cols, norm, delta = 1.0, target_weights: dict[str, float] | None = None,):
+        super().__init__()
+        # small delta → switches to linear earlier → more robust to outliers
+        # large delta → more quadratic behavior → closer to MSE
+        
+        self.label_cols = label_cols
+        self.delta = delta
+        self.idx = {name: i for i, name in enumerate(label_cols)}
+        self.norm = norm
+        
+        default_weights = {
+            "sim_pca_pt": 1.0,
+            "sim_pca_eta": 1.0,
+            "sim_pca_phi": 1.0,
+            "sim_pca_dxy": 1.0,
+            "sim_pca_dz": 1.0,
+        }
+        
+        if target_weights is not None:
+            default_weights.update(target_weights)
+        self.target_weights = default_weights
+        
+        # what does this norm do?
+        y_mean = norm["y_mean"]
+        y_std = norm["y_std"]
+
+        if y_mean is not None and y_std is not None:
+            self.register_buffer("y_mean", torch.tensor(y_mean, dtype=torch.float32))
+            self.register_buffer("y_std", torch.tensor(y_std, dtype=torch.float32))
+            self.has_target_norm = True
+        else:
+            self.y_mean = None
+            self.y_std = None
+            self.has_target_norm = False
+    
+    def smooth_l1(self, diff: torch.Tensor) -> torch.Tensor:
+        abs_diff = diff.abs()
+        return torch.where(
+            abs_diff < self.delta,
+            0.5 * diff.pow(2) / self.delta,
+            abs_diff - 0.5 * self.delta,
+        )
+
+    def denorm_component(self, x: torch.Tensor, idx: int) -> torch.Tensor:
+        if not self.has_target_norm:
+            return x
+        return x * self.y_std[idx] + self.y_mean[idx]
+
+    def wrapped_phi_diff(self, pred_phi: torch.Tensor, true_phi: torch.Tensor) -> torch.Tensor:
+        return torch.atan2(
+            torch.sin(pred_phi - true_phi),
+            torch.cos(pred_phi - true_phi),
+        )
+    
+    def component_losses(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        losses = {}
+        
+        # pt
+        if "sim_pca_pt" in self.idx:
+            i = self.idx["sim_pca_pt"]
+            diff = pred[:, i] - target[:, i]
+            losses["sim_pca_pt"] = self.smooth_l1(diff).mean()
+
+        # eta
+        if "sim_pca_eta" in self.idx:
+            i = self.idx["sim_pca_eta"]
+            diff = pred[:, i] - target[:, i]
+            losses["sim_pca_eta"] = self.smooth_l1(diff).mean()
+
+        # phi (wrapped angular residual)
+        if "sim_pca_phi" in self.idx:
+            i = self.idx["sim_pca_phi"]
+
+            pred_phi = self.denorm_component(pred[:, i], i)
+            true_phi = self.denorm_component(target[:, i], i)
+
+            diff_phi = self.wrapped_phi_diff(pred_phi, true_phi)
+
+            # put back into normalized units if targets are normalized
+            if self.has_target_norm:
+                diff_phi = diff_phi / self.y_std[i]
+
+            losses["sim_pca_phi"] = self.smooth_l1(diff_phi).mean()
+
+        # dxy
+        if "sim_pca_dxy" in self.idx:
+            i = self.idx["sim_pca_dxy"]
+            diff = pred[:, i] - target[:, i]
+            losses["sim_pca_dxy"] = self.smooth_l1(diff).mean()
+
+        # dz
+        if "sim_pca_dz" in self.idx:
+            i = self.idx["sim_pca_dz"]
+            diff = pred[:, i] - target[:, i]
+            losses["sim_pca_dz"] = self.smooth_l1(diff).mean()
+
+        return losses
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        losses = self.component_losses(pred, target)
+
+        total = 0.0
+        for name, loss_val in losses.items():
+            total = total + self.target_weights.get(name, 1.0) * loss_val
+
+        return total
+    
+    
+
+
+class TrackLoss(nn.Module):
+    def __init__(
+        self,
+        label_cols,
+        norm,
+        delta: float = 1.0,
+        target_weights: dict[str, float] | None = None,
+    ):
+        super().__init__()
+        self.label_cols = label_cols
+        self.delta = delta
+
+        weights = torch.ones(len(label_cols), dtype=torch.float32)
+        if target_weights is not None:
+            for i, name in enumerate(label_cols):
+                if name in target_weights:
+                    weights[i] = float(target_weights[name])
+
+        self.register_buffer("weights", weights)
+
+        self.phi_idx = (
+            label_cols.index("sim_pca_phi")
+            if "sim_pca_phi" in label_cols
+            else None
+        )
+
+        y_mean = norm["y_mean"]
+        y_std = norm["y_std"]
+
+        if y_mean is not None and y_std is not None:
+            self.register_buffer("y_mean", torch.tensor(y_mean, dtype=torch.float32))
+            self.register_buffer("y_std", torch.tensor(y_std, dtype=torch.float32))
+            self.has_target_norm = True
+        else:
+            self.y_mean = None
+            self.y_std = None
+            self.has_target_norm = False
+
+    def smooth_l1_per_element(self, diff: torch.Tensor) -> torch.Tensor:
+        abs_diff = diff.abs()
+        return torch.where(
+            abs_diff < self.delta,
+            0.5 * diff**2 / self.delta,
+            abs_diff - 0.5 * self.delta,
+        )
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        diff = pred - target
+
+        if self.phi_idx is not None:
+            if self.has_target_norm:
+                pred_phi = (
+                    pred[:, self.phi_idx] * self.y_std[self.phi_idx]
+                    + self.y_mean[self.phi_idx]
+                )
+                true_phi = (
+                    target[:, self.phi_idx] * self.y_std[self.phi_idx]
+                    + self.y_mean[self.phi_idx]
+                )
+            else:
+                pred_phi = pred[:, self.phi_idx]
+                true_phi = target[:, self.phi_idx]
+
+            phi_diff = torch.atan2(
+                torch.sin(pred_phi - true_phi),
+                torch.cos(pred_phi - true_phi),
+            )
+
+            if self.has_target_norm:
+                phi_diff = phi_diff / self.y_std[self.phi_idx]
+
+            diff = diff.clone()
+            diff[:, self.phi_idx] = phi_diff
+
+        loss_per_elem = self.smooth_l1_per_element(diff)
+        weighted = loss_per_elem * self.weights.view(1, -1)
+        return weighted.mean()
 
 # ============================================================================
 # DATA
@@ -226,6 +466,8 @@ def make_scheduler(optimizer):
 def train_one_epoch(model, loader, criterion, optimizer, device, scaler, use_amp):
     model.train()
     total_loss = 0.0
+    total_base_loss = 0.0
+    total_reg_loss = 0.0
     n = 0
 
     for xb, yb in loader:
@@ -237,20 +479,39 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scaler, use_amp
         if use_amp:
             with torch.autocast(device_type="cuda", dtype=torch.float16):
                 pred = model(xb)
-                loss = criterion(pred, yb)
+                base_loss = criterion(pred, yb)
+                reg_loss = regularization_loss(
+                    model,
+                    l1_lambda=L1_LAMBDA,
+                    l2_lambda=L2_LAMBDA,
+                    reg_on_bias=REG_ON_BIAS,
+                    reg_on_batchnorm=REG_ON_BATCHNORM,
+                )
+                loss = base_loss + reg_loss
+
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
             pred = model(xb)
-            loss = criterion(pred, yb)
+            base_loss = criterion(pred, yb)
+            reg_loss = regularization_loss(
+                model,
+                l1_lambda=L1_LAMBDA,
+                l2_lambda=L2_LAMBDA,
+                reg_on_bias=REG_ON_BIAS,
+                reg_on_batchnorm=REG_ON_BATCHNORM,
+            )
+            loss = base_loss + reg_loss
             loss.backward()
             optimizer.step()
 
         total_loss += loss.item() * xb.shape[0]
+        total_base_loss += base_loss.item() * xb.shape[0]
+        total_reg_loss += reg_loss.item() * xb.shape[0]
         n += xb.shape[0]
 
-    return total_loss / n
+    return total_loss / n, total_base_loss / n, total_reg_loss / n
 
 
 @torch.no_grad()
@@ -276,6 +537,40 @@ def validate(model, loader, criterion, device, use_amp):
 
     return total_loss / n
 
+@torch.no_grad()
+def per_target_loss_breakdown(model, loader, criterion, device, use_amp):
+    model.eval()
+
+    raw_totals = {name: 0.0 for name in criterion.label_cols}
+    weighted_totals = {name: 0.0 for name in criterion.label_cols}
+    n = 0
+
+    for xb, yb in loader:
+        xb = xb.to(device, non_blocking=True)
+        yb = yb.to(device, non_blocking=True)
+
+        if use_amp:
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                pred = model(xb)
+                losses = criterion.component_losses(pred, yb)
+        else:
+            pred = model(xb)
+            losses = criterion.component_losses(pred, yb)
+
+        batch_n = xb.shape[0]
+        for name, val in losses.items():
+            raw_totals[name] += val.item() * batch_n
+            weighted_totals[name] += criterion.target_weights.get(name, 1.0) * val.item() * batch_n
+        n += batch_n
+
+    print("\nPer-target val loss breakdown:")
+    print(f"  {'target':>22s}  {'raw':>12s}  {'weighted':>12s}  {'weight':>8s}")
+    print(f"  {'-'*22}  {'-'*12}  {'-'*12}  {'-'*8}")
+    for name in criterion.label_cols:
+        raw = raw_totals[name] / n
+        weighted = weighted_totals[name] / n
+        weight = criterion.target_weights.get(name, 1.0)
+        print(f"  {name:>22s}  {raw:12.6f}  {weighted:12.6f}  {weight:8.3f}")
 
 @torch.no_grad()
 def per_target_metrics(model, loader, label_cols, norm, device, use_amp):
@@ -306,6 +601,10 @@ def per_target_metrics(model, loader, label_cols, norm, device, use_amp):
     print(f"  {'-'*22}  {'-'*12}  {'-'*12}")
     for i, name in enumerate(label_cols):
         diff = pred[:, i] - true[:, i]
+
+        if name == "sim_pca_phi":
+            diff = np.arctan2(np.sin(diff), np.cos(diff))
+
         mae = np.abs(diff).mean()
         rmse = np.sqrt((diff ** 2).mean())
         print(f"  {name:>22s}  {mae:12.6f}  {rmse:12.6f}")
@@ -352,7 +651,19 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel parameters: {n_params:,}")
 
-    criterion = nn.MSELoss()
+    criterion = TrackLossInd(
+        label_cols=label_cols,
+        norm=norm,
+        delta=1.0,
+        target_weights={
+            "sim_pca_pt": 1.0,
+            "sim_pca_eta": 1.0,
+            "sim_pca_phi": 1.0,
+            "sim_pca_dxy": 1.0,
+            "sim_pca_dz": 1.0,
+        },
+    )
+
     optimizer = make_optimizer(model)
     scheduler = make_scheduler(optimizer)
 
@@ -366,16 +677,23 @@ def main():
     print(f"AMP:        {use_amp}")
     print(f"Compile:    {USE_COMPILE and hasattr(torch, 'compile')}")
     print(f"Epochs:     {EPOCHS}\n")
+    
+    print(f"Weight decay: {WEIGHT_DECAY}")
+    print(f"L1 lambda:    {L1_LAMBDA}")
+    print(f"L2 lambda:    {L2_LAMBDA}")
+    print(f"Reg bias:     {REG_ON_BIAS}")
+    print(f"Reg BN:       {REG_ON_BATCHNORM}")
 
     best_val = float("inf")
     t0 = time.time()
 
     for epoch in range(1, EPOCHS + 1):
         t_epoch = time.time()
-
-        train_loss = train_one_epoch(
+        
+        train_loss, train_base_loss, train_reg_loss = train_one_epoch(
             model, train_dl, criterion, optimizer, device, scaler, use_amp
         )
+        
         val_loss = validate(model, val_dl, criterion, device, use_amp)
 
         if scheduler is not None:
@@ -413,6 +731,8 @@ def main():
             print(
                 f"epoch {epoch:3d}/{EPOCHS} | "
                 f"train {train_loss:.6f} | "
+                f"base {train_base_loss:.6f} | "
+                f"reg {train_reg_loss:.6f} | "
                 f"val {val_loss:.6f}{star} | "
                 f"lr {lr:.2e} | "
                 f"{dt:.1f}s"
@@ -427,10 +747,12 @@ def main():
         model.load_state_dict(ckpt["model_state"])
 
     per_target_metrics(model, val_dl, label_cols, norm, device, use_amp)
-
+    per_target_loss_breakdown(model, val_dl, criterion, device, use_amp)
+    
     if SAVE_MODEL:
         print(f"\nModel saved to {MODEL_PATH}")
 
 
 if __name__ == "__main__":
     main()
+    

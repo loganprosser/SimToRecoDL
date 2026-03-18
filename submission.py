@@ -48,8 +48,6 @@ def train(model, data_loader, val_data_loader, criterion, optimizer, epochs, dev
 
     for epoch in range(epochs):
         # TODO: write a training loop
-        
-        
         model.train()
         running_loss = 0.0
         
