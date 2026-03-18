@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader, TensorDataset
 DATA_PATH = "./track_data_etaM1to1.npz"
 
 HIDDEN_LAYERS = [256, 256, 128]
-ACTIVATION = "tanh"          # "relu", "gelu", "silu", "tanh", "leaky_relu"
+ACTIVATION = "silu"          # "relu", "gelu", "silu", "tanh", "leaky_relu"
 DROPOUT = 0.0                # set 0 for max speed first
 BATCH_NORM = True
 
@@ -44,7 +44,7 @@ REG_ON_BATCHNORM = False     # usually False
 
 
 
-EPOCHS = 50
+EPOCHS = 5
 OPTIMIZER = "adamw"          # adamw is a good default
 SCHEDULER = "cosine"         # "cosine", "step", "none"
 STEP_LR_EVERY = 15
@@ -60,20 +60,20 @@ MODEL_PATH = "./track_cache/model.pt"
 PRINT_EVERY = 1
 
 # DataLoader speed knobs
-NUM_WORKERS = 14              #min(8, os.cpu_count() or 1)
+NUM_WORKERS = 0             #min(8, os.cpu_count() or 1)
 PIN_MEMORY = True
-PERSISTENT_WORKERS = NUM_WORKERS > 0
-PREFETCH_FACTOR = 4 if NUM_WORKERS > 0 else None
+PERSISTENT_WORKERS = False
+PREFETCH_FACTOR = None
 
 # CUDA speed knobs
 USE_AMP = True               # mixed precision on CUDA
-USE_COMPILE = True           # torch.compile for PyTorch 2.x
+USE_COMPILE = False           # torch.compile for PyTorch 2.x
 
 # ==== HELPERS ======
 def regularization_loss(
     model: nn.Module,
     l1_lambda: float = 0.0,
-    l2_lambda: float = 0.0,
+    l2_lambda: float = 0.25,
     reg_on_bias: bool = False,
     reg_on_batchnorm: bool = False,
 ) -> torch.Tensor:
@@ -662,7 +662,7 @@ def main():
             "sim_pca_dxy": 1.0,
             "sim_pca_dz": 1.0,
         },
-    )
+    ).to(device)
 
     optimizer = make_optimizer(model)
     scheduler = make_scheduler(optimizer)
