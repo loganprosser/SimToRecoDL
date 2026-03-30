@@ -5,7 +5,7 @@ import pandas as pd
 
 # ====== import data from the csv =======
 path = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/filtered_particles.csv"
-df = pd.read(path)
+df = pd.read_csv(path)
 
 # ===== Input and Output Data =====
 
