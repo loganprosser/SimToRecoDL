@@ -113,7 +113,7 @@ if TEST_TRAIN:
     print("initial loss:", loss.item())
 
 # ===== Training loop =====
-EPOCHS = 20
+EPOCHS = 40
 
 for epoch in range(EPOCHS):
     # ===== TRAIN ======
