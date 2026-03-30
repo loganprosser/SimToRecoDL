@@ -50,9 +50,10 @@ for evt in range(n_events):
         eta = data["sim_eta"][evt][i]
         pt = data["sim_pt"][evt][i]
         pid = data["sim_pdgId"][evt][i]
+        q = data["sim_q"][evt][i]
 
-        # --- FILTER ---
-        if abs(eta) > ETACUT or pt < PTCUT or abs(pid) != MUON_ID:
+        # --- FILTER!!!! ---
+        if abs(eta) > ETACUT or pt < PTCUT or abs(pid) != MUON_ID or q == 0:
             continue
 
         # --- TARGETS ---
@@ -121,5 +122,4 @@ output_path = os.path.join(OUTPUT_DIR, OUTPUT_CSV)
 
 df = pd.DataFrame(rows)
 df.to_csv(output_path, index=False)
-
 print(f"Saved {len(df)} rows to {output_path}")
