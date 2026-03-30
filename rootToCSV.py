@@ -1,6 +1,7 @@
 import uproot
 import numpy as np
 import pandas as pd
+import os
 
 # ====== CONFIG ======
 INPUT_FILE = "/data2/segmentlinking/CMSSW_12_2_0_pre2/trackingNtuple_10mu_pt_0p5_50.root"
@@ -113,5 +114,12 @@ for evt in range(n_events):
 
 # ====== SAVE CSV ======
 df = pd.DataFrame(rows)
-df.to_csv(OUTPUT_CSV, index=False)
-print(f"Saved {len(df)} rows to {OUTPUT_CSV}")
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)  # create directory if it doesn't exist
+
+output_path = os.path.join(OUTPUT_DIR, OUTPUT_CSV)
+
+df = pd.DataFrame(rows)
+df.to_csv(output_path, index=False)
+
+print(f"Saved {len(df)} rows to {output_path}")
