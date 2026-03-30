@@ -100,12 +100,51 @@ criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 # ====== trial forward pass ======
-xb, yb = next(iter(train_loader))
+TEST_TRAIN = False
+if TEST_TRAIN:
+    xb, yb = next(iter(train_loader))
 
-preds = model(xb)
+    preds = model(xb)
 
-print("pred shape:", preds.shape)
-print("target shape:", yb.shape)
+    print("pred shape:", preds.shape)
+    print("target shape:", yb.shape)
 
-loss = criterion(preds, yb)
-print("initial loss:", loss.item())
+    loss = criterion(preds, yb)
+    print("initial loss:", loss.item())
+
+# ===== Training loop =====
+EPOCHS = 20
+
+for epoch in range(EPOCHS):
+    # ===== TRAIN ======
+    model.train()
+    train_loss = 0.0
+    
+    for xb, yb in train_loader:
+        optimizer.zero_grad()
+        preds = model(xb)
+        loss = criterion(preds, yb)
+        
+        loss.backwards()
+        optimizer.step()
+        
+        train_loss += loss.item() * xb.size(0)
+        
+    train_loss /= len(train_loader.dataset)
+    
+    # ==== VALIDATION ====
+    
+    model.eval()
+    val_loss = 0.0
+    
+    with torch.no_grad():
+        for xb, yb in val_loader:
+            preds = model(xb)
+            loss = criterion(preds, yb)
+            val_loss += loss.item() * xb.size(0)
+            
+    val_loss /= len(val_loader.dataset)
+    
+    print(f"EPOCH {epoch + 1:2d}/{EPOCHS} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+            
+    
