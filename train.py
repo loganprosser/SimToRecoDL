@@ -71,7 +71,7 @@ val_dataset = TensorDataset(X_val, Y_val)
 # ====== DataLoaders ======
 # data loader puts data into the network in chunks
 # gives a batch size at a time
-BATCH_SIZE = 1024
+BATCH_SIZE = 256
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
