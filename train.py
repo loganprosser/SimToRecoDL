@@ -125,7 +125,7 @@ for epoch in range(EPOCHS):
         preds = model(xb)
         loss = criterion(preds, yb)
         
-        loss.backwards()
+        loss.backward()
         optimizer.step()
         
         train_loss += loss.item() * xb.size(0)
