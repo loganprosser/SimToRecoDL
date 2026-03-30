@@ -6,7 +6,7 @@ import matplotlib
 import pandas as pd
 
 
-class SimpleTrackNet(nn.module):
+class SimpleTrackNet(nn.Module):
     
     def __init__(self, input_dim, hidden_dim=64, output_dim=5):
         super().__init__()
