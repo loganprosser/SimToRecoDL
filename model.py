@@ -13,7 +13,7 @@ class SimpleTrackNet(nn.module):
         
         self.net == nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
-            nn.ReLU()
+            nn.ReLU(),
             nn.Linear(hidden_dim, output_dim)
         )
 

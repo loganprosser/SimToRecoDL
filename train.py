@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 import torch.optim as optim
+import torch.nn as nn
 import numpy as np
 import matplotlib
 import pandas as pd
