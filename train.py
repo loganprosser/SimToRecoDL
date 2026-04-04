@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib
 import pandas as pd
 
-from model import SimpleTrackNet
+from model import SimpleTrackNet, TestTrackNet
 
 # ====== import data from the csv =======
 path = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/filtered_particles.csv"
@@ -72,7 +72,7 @@ val_dataset = TensorDataset(X_val, Y_val)
 # data loader puts data into the network in chunks
 # gives a batch size at a time (used for gradient update)
 # 256 and 80 epochs works pretty well
-BATCH_SIZE = 1024
+BATCH_SIZE = 10000
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
@@ -93,8 +93,16 @@ if CHECK_SHAPE:
 # ===== Training ======
 
 input_dim = X_train.shape[1]
+# === Init Model =====
 
-model = SimpleTrackNet(input_dim=input_dim, hidden_dim=64, output_dim=5)
+#model = TestTrackNet(input_dim=input_dim, hidden_dim=64, output_dim=5)
+model = SimpleTrackNet(
+    input_dim=X_train.shape[1],
+    hidden_layers=[128, 128, 64],
+    output_dim=5,
+    activation=nn.ReLU
+)
+
 print(model)
 
 criterion = nn.MSELoss()
