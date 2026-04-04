@@ -5,8 +5,38 @@ import torch.nn as nn
 import numpy as np
 import matplotlib
 import pandas as pd
+import random
 
 from model import SimpleTrackNet, TestTrackNet
+
+# ===== Picking Device ========
+device = torch.device(
+    "mps" if torch.backends.mps.is_available() 
+    else "cuda" if torch.cuda.is_available() 
+    else "cpu"
+    
+)
+print(F"Device set to {device}")
+
+# ==== Setting Seed =====
+SEED = 42
+
+# Python + NumPy
+random.seed(SEED)
+np.random.seed(SEED)
+
+# PyTorch (CPU always works)
+torch.manual_seed(SEED)
+
+# CUDA (ONLY if available)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+
+# Determinism settings (only affects CUDA backend)
+if torch.backends.cudnn.is_available():
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # ====== import data from the csv =======
 path = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/filtered_particles.csv"
@@ -48,7 +78,7 @@ val_fraction = 0.2
 n_val = int(n * val_fraction)
 
 # shuffle indices
-rng = np.random.default_rng(seed=42)
+rng = np.random.default_rng(seed=SEED)
 indices = rng.permutation(n)
 
 val_idx = indices[:n_val]
@@ -72,10 +102,15 @@ val_dataset = TensorDataset(X_val, Y_val)
 # data loader puts data into the network in chunks
 # gives a batch size at a time (used for gradient update)
 # 256 and 80 epochs works pretty well
-BATCH_SIZE = 10000
+# TODO understand why we have such a large dependancy on this
+BATCH_SIZE = 256 #not sure why this effects model so much idk??
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+# random seed for dataloader
+g = torch.Generator()
+g.manual_seed(SEED)
+
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=g)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, generator=g)
 
 
 # ====== CHECK SHAPES ======
@@ -100,9 +135,10 @@ model = SimpleTrackNet(
     input_dim=X.shape[1],
     hidden_layers=[128, 128, 64],
     use_batchnorm=True,
-    dropout=0.1,
+    dropout=0.15,
     activation=nn.ReLU
 )
+model.to(device)
 
 print(model)
 
@@ -113,7 +149,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 TEST_TRAIN = False
 if TEST_TRAIN:
     xb, yb = next(iter(train_loader))
-
+    xb, yb = xb.to(device), yb.to(device)
     preds = model(xb)
 
     print("pred shape:", preds.shape)
@@ -131,6 +167,7 @@ for epoch in range(EPOCHS):
     train_loss = 0.0
     
     for xb, yb in train_loader:
+        xb, yb = xb.to(device), yb.to(device)
         optimizer.zero_grad()
         preds = model(xb)
         loss = criterion(preds, yb)
@@ -149,6 +186,7 @@ for epoch in range(EPOCHS):
     
     with torch.no_grad():
         for xb, yb in val_loader:
+            xb, yb = xb.to(device), yb.to(device)
             preds = model(xb)
             loss = criterion(preds, yb)
             val_loss += loss.item() * xb.size(0)
