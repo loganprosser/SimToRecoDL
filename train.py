@@ -135,7 +135,7 @@ model = SimpleTrackNet(
     input_dim=X.shape[1],
     hidden_layers=[128, 128, 64],
     use_batchnorm=False,
-    dropout=0.15,
+    dropout=0.05,
     activation=nn.ReLU
 )
 model.to(device)
