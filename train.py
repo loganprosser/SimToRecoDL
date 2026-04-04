@@ -97,9 +97,10 @@ input_dim = X_train.shape[1]
 
 #model = TestTrackNet(input_dim=input_dim, hidden_dim=64, output_dim=5)
 model = SimpleTrackNet(
-    input_dim=X_train.shape[1],
+    input_dim=X.shape[1],
     hidden_layers=[128, 128, 64],
-    output_dim=5,
+    use_batchnorm=True,
+    dropout=0.1,
     activation=nn.ReLU
 )
 

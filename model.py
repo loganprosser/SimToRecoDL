@@ -5,7 +5,50 @@ import numpy as np
 import matplotlib
 import pandas as pd
 
+import torch
+import torch.nn as nn
+
+
 class SimpleTrackNet(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        hidden_layers=None,
+        output_dim=5,
+        activation=nn.ReLU,
+        use_batchnorm=False,
+        dropout=0.0
+    ):
+        super().__init__()
+
+        if hidden_layers is None:
+            hidden_layers = [64, 64]
+
+        layers = []
+        prev_dim = input_dim
+
+        for hidden_dim in hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+
+            layers.append(activation())
+
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout)) # dropout and batchnorm automatically hav ethis built in so we dont nee to worry about wriiting stuff for eval vs train pytroch does it all internally
+
+            prev_dim = hidden_dim
+
+        # final output layer (no activation, no BN, no dropout)
+        layers.append(nn.Linear(prev_dim, output_dim))
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+class SimpleTrackNetNOBNDROP(nn.Module):
     def __init__(self, input_dim, hidden_layers=None, output_dim=5, activation=nn.ReLU):
         super().__init__()
 
