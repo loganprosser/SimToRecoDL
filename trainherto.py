@@ -91,6 +91,26 @@ X_val   = X[val_idx]
 Y_train = Y[train_idx]
 Y_val   = Y[val_idx]
 
+# ==== Normalize inputs from train only ====
+x_mean = X_train.mean(axis=0)
+x_std = X_train.std(axis=0)
+
+# avoid divide-by-zero for constant columns
+x_std[x_std < 1e-8] = 1.0
+
+# normalize
+X_train = (X_train - x_mean) / x_std
+X_val   = (X_val   - x_mean) / x_std
+
+# ====== OUTPUT NORMALIZATION STATS FROM TRAIN ONLY ======
+y_mean = Y_train.mean(axis=0)
+y_std = Y_train.std(axis=0)
+
+y_std[y_std < 1e-8] = 1.0
+
+Y_train = (Y_train - y_mean) / y_std
+Y_val   = (Y_val   - y_mean) / y_std
+
 
 # ====== CONVERT TO TENSORS ======
 X_train = torch.tensor(X_train, dtype=torch.float32)
@@ -111,6 +131,17 @@ g.manual_seed(SEED)
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=g)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, generator=g)
 
+PHI_INDEX = TARGET_COLS.index("pca_phi")
+
+# store normalization stats as tensors on device for de-normalizing predictions
+y_mean_t = torch.tensor(y_mean, dtype=torch.float32, device=device)
+y_std_t = torch.tensor(y_std, dtype=torch.float32, device=device)
+
+def wrapped_angle_diff(pred, target):
+    return torch.atan2(torch.sin(pred - target), torch.cos(pred - target))
+
+def denormalize_targets(y_norm):
+    return y_norm * y_std_t + y_mean_t
 
 # ====== CHECK SHAPES ======
 if CHECK_SHAPE:
@@ -183,15 +214,47 @@ if TRAIN:
         model.eval()
         val_loss = 0.0
 
+        total_val_mae = torch.zeros(len(TARGET_COLS), device=device)
+        total_val_sq = torch.zeros(len(TARGET_COLS), device=device)
+        total_count = 0
+
         with torch.no_grad():
             for xb, yb in val_loader:
                 xb, yb = xb.to(device), yb.to(device)
 
                 mu, logvar = model(xb)
-                loss = paper_hetero_loss(yb, mu, logvar)
 
+                loss = paper_hetero_loss(yb, mu, logvar)
                 val_loss += loss.item() * xb.size(0)
+
+                # de-normalize to original physical units
+                mu_phys = denormalize_targets(mu)
+                yb_phys = denormalize_targets(yb)
+
+                diff = mu_phys - yb_phys
+
+                # wrap phi residual correctly
+                diff[:, PHI_INDEX] = wrapped_angle_diff(
+                    mu_phys[:, PHI_INDEX],
+                    yb_phys[:, PHI_INDEX]
+                )
+
+                total_val_mae += diff.abs().sum(dim=0)
+                total_val_sq += (diff ** 2).sum(dim=0)
+                total_count += xb.size(0)
 
         val_loss /= len(val_loader.dataset)
 
-        print(f"EPOCH {epoch + 1:2d}/{EPOCHS} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+        per_target_mae = (total_val_mae / total_count).detach().cpu().numpy()
+        per_target_rmse = torch.sqrt(total_val_sq / total_count).detach().cpu().numpy()
+
+        overall_val_mae = per_target_mae.mean()
+        overall_val_rmse = per_target_rmse.mean()
+
+        print(f"EPOCH {epoch + 1:2d}/{EPOCHS} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | Val Mean MAE: {overall_val_mae:.6f} | Val Mean RMSE: {overall_val_rmse:.6f}")
+        print("   Per-target MAE:")
+        for name, val in zip(TARGET_COLS, per_target_mae):
+            print(f"      {name}: {val:.6f}")
+        print("   Per-target RMSE:")
+        for name, val in zip(TARGET_COLS, per_target_rmse):
+            print(f"      {name}: {val:.6f}")
