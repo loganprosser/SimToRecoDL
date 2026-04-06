@@ -8,6 +8,51 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+#TODO impliment and test recurrent neural network (GRU vs LSTM plain RNN?)
+#TODO implement and test transformer based NN 
+
+class HeteroTrackNet(nn.Module):
+    # learns mu and sigma assuming a diagonal variance matrix (no covariance)
+    def __init__(
+        self,
+        input_dim,
+        hidden_layers=None,
+        output_dim=5,
+        activation=nn.ReLU,
+        use_batchnorm=False,
+        dropout=0.0
+    ):
+        super().__init__()
+
+        if hidden_layers is None:
+            hidden_layers = [64, 64]
+
+        layers = []
+        prev_dim = input_dim
+
+        for hidden_dim in hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+
+            layers.append(activation())
+
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+
+            prev_dim = hidden_dim
+
+        self.backbone = nn.Sequential(*layers)
+
+        self.mu_head = nn.Linear(prev_dim, output_dim)
+        self.logvar_head = nn.Linear(prev_dim, output_dim)
+
+    def forward(self, x):
+        features = self.backbone(x)
+        mu = self.mu_head(features)
+        logvar = self.logvar_head(features)
+        return mu, logvar
 
 class SimpleTrackNet(nn.Module):
     def __init__(

@@ -10,11 +10,14 @@ OUTPUT_DIR = "outputCSVs"
 
 ETACUT = 0.9
 PTCUT = 1.9
-HITTYPE = 4
-MUON_ID = 13
+HITTYPE = 4 # silicon hitts are 4, others are calirometer muon system or others
+MUON_ID = 13 # pdgId = 13 for muons
 
 N_LAYERS = 6
 SENTINEL = -999.0
+
+# filtering for lower only each cylinder has two detecting rectangles the upper and lower which are used to track the stubs
+# only using lower here to simplify the data
 
 # ====== LOAD DATA ======
 branches = [

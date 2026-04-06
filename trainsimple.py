@@ -7,7 +7,8 @@ import matplotlib
 import pandas as pd
 import random
 
-from model import SimpleTrackNet, TestTrackNet
+from model import SimpleTrackNet, TestTrackNet, HeteroTrackNet
+from loss import hetero_loss
 
 # ===== Picking Device ========
 device = torch.device(
@@ -131,18 +132,25 @@ input_dim = X_train.shape[1]
 # === Init Model =====
 
 #model = TestTrackNet(input_dim=input_dim, hidden_dim=64, output_dim=5)
-model = SimpleTrackNet(
+model = SipleTrackNet(
     input_dim=X.shape[1],
     hidden_layers=[256, 256, 64],   #128, 128, 64]
     use_batchnorm=False,
     dropout=0.00,
     activation=nn.ReLU
 )
+
+
 model.to(device)
 
 print(model)
 
-criterion = nn.MSELoss()
+
+# ====== Set up the Loss and optimizer =======
+
+criterion = nn.MSELoss() # use for simple models
+#optimizer = optim.Adam(model.parameters(), lr=1e-3) # use for simple models
+
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 # ====== trial forward pass ======
