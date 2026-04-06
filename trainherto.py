@@ -123,7 +123,7 @@ val_dataset = TensorDataset(X_val, Y_val)
 
 
 # ====== DataLoaders ======
-BATCH_SIZE = 512
+BATCH_SIZE = 256
 
 g = torch.Generator()
 g.manual_seed(SEED)
@@ -160,7 +160,7 @@ input_dim = X_train.shape[1]
 
 model = HeteroTrackNet(
     input_dim=input_dim,
-    hidden_layers=[256, 256, 64],
+    hidden_layers=[256, 256, 256, 64],
     output_dim=5,
     use_batchnorm=True,
     dropout=0.00,
