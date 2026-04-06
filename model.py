@@ -51,7 +51,7 @@ class HeteroTrackNet(nn.Module):
     def forward(self, x):
         features = self.backbone(x)
         mu = self.mu_head(features)
-        logvar = self.logvar_head(features)
+        logvar = self.logvar_head(features) #added detach() to go with paper???
         return mu, logvar
 
 class SimpleTrackNet(nn.Module):

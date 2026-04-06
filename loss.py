@@ -8,8 +8,36 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+def angle_diff(pred, target):
+    return torch.atan2(
+        torch.sin(pred - target),
+        torch.cos(pred - target)
+    )
 
-def hetero_loss(y, mu, logvar):
+def paper_hetero_loss(y, mu, logvar, phi_idx=2, clamp_min=-10.0, clamp_max=5.0):
+    logvar = torch.clamp(logvar, clamp_min, clamp_max)
+
+    # ----- Mean term: pure squared error -----
+    residual = y - mu
+    residual = residual.clone()
+    residual[:, phi_idx] = angle_diff(mu[:, phi_idx], y[:, phi_idx])
+    mse = residual ** 2
+
+    # ----- Variance term: NLL with detached mean -----
+    mu_detached = mu.detach()
+    residual_detached = y - mu_detached
+    residual_detached = residual_detached.clone()
+    residual_detached[:, phi_idx] = angle_diff(mu_detached[:, phi_idx], y[:, phi_idx])
+
+    nll = 0.5 * (
+        logvar + residual_detached ** 2 * torch.exp(-logvar)
+    )
+
+    return mse.mean() + nll.mean()
+
+
+
+def bad_hetero_loss(y, mu, logvar):
     # mean prediction loss
     mse = (y - mu) ** 2
 

@@ -7,7 +7,7 @@ import pandas as pd
 import random
 
 from model import HeteroTrackNet
-from loss import hetero_loss
+from loss import paper_hetero_loss
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
@@ -153,7 +153,7 @@ if TEST_TRAIN:
     print("logvar shape:", logvar.shape)
     print("target shape:", yb.shape)
 
-    loss = hetero_loss(yb, mu, logvar)
+    loss = paper_hetero_loss(yb, mu, logvar)
     print("initial loss:", loss.item())
 
 
@@ -171,7 +171,7 @@ if TRAIN:
             optimizer.zero_grad()
 
             mu, logvar = model(xb)
-            loss = hetero_loss(yb, mu, logvar)
+            loss = paper_hetero_loss(yb, mu, logvar)
 
             loss.backward()
             optimizer.step()
@@ -188,7 +188,7 @@ if TRAIN:
                 xb, yb = xb.to(device), yb.to(device)
 
                 mu, logvar = model(xb)
-                loss = hetero_loss(yb, mu, logvar)
+                loss = paper_hetero_loss(yb, mu, logvar)
 
                 val_loss += loss.item() * xb.size(0)
 
