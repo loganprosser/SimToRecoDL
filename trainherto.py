@@ -12,7 +12,7 @@ from loss import hetero_loss
 # ====== Running Flags =======
 CHECK_SHAPE = False
 TEST_TRAIN = False
-TRAIN = False
+TRAIN = True
 
 
 # ===== Picking Device ========
