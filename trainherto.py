@@ -123,7 +123,7 @@ val_dataset = TensorDataset(X_val, Y_val)
 
 
 # ====== DataLoaders ======
-BATCH_SIZE = 256
+BATCH_SIZE = 512
 
 g = torch.Generator()
 g.manual_seed(SEED)
