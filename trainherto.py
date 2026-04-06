@@ -8,12 +8,13 @@ import random
 
 from model import HeteroTrackNet
 from loss import paper_hetero_loss
+from helpers import print_final_validation_samples
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
 TEST_TRAIN = False
 TRAIN = True
-
+PRINT_FINAL_VAL_SAMPLES = True
 
 # ===== Picking Device ========
 device = torch.device(
@@ -258,3 +259,12 @@ if TRAIN:
         print("   Per-target RMSE:")
         for name, val in zip(TARGET_COLS, per_target_rmse):
             print(f"      {name}: {val:.6f}")
+            
+if PRINT_FINAL_VAL_SAMPLES:
+    print_final_validation_samples(
+        model, val_loader, device,
+        denormalize_targets, y_std_t,
+        TARGET_COLS, PHI_INDEX,
+        wrapped_angle_diff,
+        num_examples=10
+    )
