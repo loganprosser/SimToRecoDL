@@ -161,7 +161,7 @@ input_dim = X_train.shape[1]
 
 model = HeteroTrackNet(
     input_dim=input_dim,
-    hidden_layers=[1024, 1024, 512, 256, 128],
+    hidden_layers=[1024, 1024, 512, 256],
     output_dim=5,
     use_batchnorm=True,
     dropout=0.00,
@@ -190,7 +190,7 @@ if TEST_TRAIN:
 
 
 # ===== Training loop =====
-EPOCHS = 80
+EPOCHS = 500
 
 if TRAIN:
     for epoch in range(EPOCHS):
