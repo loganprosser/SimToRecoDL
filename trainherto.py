@@ -161,7 +161,7 @@ input_dim = X_train.shape[1]
 
 model = HeteroTrackNet(
     input_dim=input_dim,
-    hidden_layers=[256, 256, 256, 64],
+    hidden_layers=[1024, 1024, 512],
     output_dim=5,
     use_batchnorm=True,
     dropout=0.00,
