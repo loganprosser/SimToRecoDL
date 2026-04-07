@@ -266,5 +266,5 @@ if PRINT_FINAL_VAL_SAMPLES:
         denormalize_targets, y_std_t,
         TARGET_COLS, PHI_INDEX,
         wrapped_angle_diff,
-        num_examples=10
+        num_examples=4
     )
