@@ -17,7 +17,8 @@ def hetero_gaussian_nll_with_phi(
     phi_index=None,
     min_logvar=-10.0,
     max_logvar=10.0,
-    target_weights=None
+    target_weights=None,
+    beta=2.0
 ):
     logvar = torch.clamp(logvar, min=min_logvar, max=max_logvar)
 
@@ -28,7 +29,7 @@ def hetero_gaussian_nll_with_phi(
         diff[:, phi_index] = angle_diff(mu[:, phi_index], y[:, phi_index])
 
     sq_error = diff ** 2
-    loss = 0.5 * (logvar + sq_error * torch.exp(-logvar))
+    loss = 0.5 * (logvar + beta * sq_error * torch.exp(-logvar))
 
     if target_weights is not None: # currently weights both mean and variacnce equally maybe change?
         target_weights = target_weights.to(y.device)
