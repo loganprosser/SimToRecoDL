@@ -23,7 +23,7 @@ MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 3.0])
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
-HIDDEN_LAYERS = [512, 512, 128]
+HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!!
 
 CRITERION = hetero_gaussian_nll_with_phi
 
@@ -187,7 +187,7 @@ model = HeteroTrackNet(
     hidden_layers=HIDDEN_LAYERS,
     output_dim=5,
     use_batchnorm=True,
-    dropout=0.00,
+    dropout=0.10,
     activation=nn.ReLU
 )
 model.to(device)
