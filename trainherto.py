@@ -21,6 +21,7 @@ TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
+HIDDEN_LAYERS=[4096, 4096, 2048, 1024, 512]
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
@@ -174,7 +175,7 @@ input_dim = X_train.shape[1]
 # hidden_layers=[1024, 1024, 512, 256]
 model = HeteroTrackNet(
     input_dim=input_dim,
-    hidden_layers=[4096, 4096, 2048, 1024, 512],
+    hidden_layers=HIDDEN_LAYERS,
     output_dim=5,
     use_batchnorm=True,
     dropout=0.00,
@@ -185,6 +186,8 @@ model.to(device)
 print(model)
 
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
+# scheduler decreases the learnring rate as we go on with cosine decay
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
 
 # ====== trial forward pass ======
@@ -273,6 +276,8 @@ if TRAIN:
         print("   Per-target RMSE:")
         for name, val in zip(TARGET_COLS, per_target_rmse):
             print(f"      {name}: {val:.6f}")
+            
+        scheduler.step() # to move forward per epoch
             
 if PRINT_FINAL_VAL_SAMPLES:
     print_final_validation_samples(
