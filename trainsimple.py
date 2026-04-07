@@ -11,7 +11,7 @@ from model import SimpleTrackNet, TestTrackNet, HeteroTrackNet
 from helpers import print_final_validation_samples
 
 # ===== Constants ======
-EPOCHS = 100
+EPOCHS = 1000
 
 
 # ====== Running flags ======
