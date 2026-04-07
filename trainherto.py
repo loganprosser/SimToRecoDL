@@ -13,6 +13,12 @@ from helpers import print_final_validation_samples
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent??
 
+# ====== Running Constants =======
+EPOCHS = 1000
+TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
+
+BATCH_SIZE = 256
+
 # ====== Running Flags =======
 CHECK_SHAPE = False
 TEST_TRAIN = False
@@ -127,7 +133,7 @@ val_dataset = TensorDataset(X_val, Y_val)
 
 
 # ====== DataLoaders ======
-BATCH_SIZE = 256
+BATCH_SIZE = BATCH_SIZE
 
 g = torch.Generator()
 g.manual_seed(SEED)
@@ -194,7 +200,8 @@ if TEST_TRAIN:
 
 
 # ===== Training loop =====
-EPOCHS = 1000
+EPOCHS = EPOCHS
+TARGET_WEIGHTS = TARGET_WEIGHTS
 
 if TRAIN:
     for epoch in range(EPOCHS):
@@ -207,7 +214,7 @@ if TRAIN:
             optimizer.zero_grad()
 
             mu, logvar = model(xb)
-            loss = paper_hetero_loss(yb, mu, logvar)
+            loss = paper_hetero_loss(yb, mu, logvar, target_weights=TARGET_WEIGHTS)
 
             loss.backward()
             optimizer.step()
@@ -229,7 +236,7 @@ if TRAIN:
 
                 mu, logvar = model(xb)
 
-                loss = paper_hetero_loss(yb, mu, logvar)
+                loss = paper_hetero_loss(yb, mu, logvar, target_weights=TARGET_WEIGHTS)
                 val_loss += loss.item() * xb.size(0)
 
                 # de-normalize to original physical units

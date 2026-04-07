@@ -11,7 +11,9 @@ import torch.nn as nn
 #TODO impliment and test recurrent neural network (GRU vs LSTM plain RNN?)
 #TODO implement and test transformer based NN 
 
+
 class HeteroTrackNet(nn.Module):
+    # TODO impliment L1 and L2 regularization, stopping early, 
     # learns mu and sigma assuming a diagonal variance matrix (no covariance)
     def __init__(
         self,

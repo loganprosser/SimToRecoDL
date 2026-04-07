@@ -14,7 +14,7 @@ def angle_diff(pred, target):
         torch.cos(pred - target)
     )
 
-def paper_hetero_loss(y, mu, logvar, phi_idx=2, clamp_min=-10.0, clamp_max=5.0):
+def paper_hetero_loss(y, mu, logvar, phi_idx=2, clamp_min=-10.0, clamp_max=5.0, target_weights=None):
     logvar = torch.clamp(logvar, clamp_min, clamp_max)
 
     # ----- Mean term: pure squared error -----
@@ -33,6 +33,12 @@ def paper_hetero_loss(y, mu, logvar, phi_idx=2, clamp_min=-10.0, clamp_max=5.0):
         logvar + residual_detached ** 2 * torch.exp(-logvar)
     )
 
+    if target_weights:
+        target_weights = target_weights.to(y.device)
+        mse = mse * target_weights
+        nll = nll * target_weights
+    
+    
     return mse.mean() + nll.mean()
 
 
