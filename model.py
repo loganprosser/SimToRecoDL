@@ -93,7 +93,7 @@ class SimpleTrackNet(nn.Module):
         layers.append(nn.Linear(prev_dim, output_dim))
 
         self.net = nn.Sequential(*layers)
-
+ 
     def forward(self, x):
         return self.net(x)
 
