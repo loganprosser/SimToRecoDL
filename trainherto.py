@@ -17,6 +17,7 @@ from helpers import print_final_validation_samples
 # ====== Running Constants =======
 EPOCHS = 1000
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
+MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 3.0])
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
@@ -208,7 +209,8 @@ if TEST_TRAIN:
         mu,
         logvar,
         phi_index=PHI_INDEX,
-        target_weights=TARGET_WEIGHTS
+        target_weights=TARGET_WEIGHTS,
+        mean_weights=MEAN_WEIGHTS
         )
     
     print("initial loss:", loss.item())
@@ -234,7 +236,8 @@ if TRAIN:
                 mu,
                 logvar,
                 phi_index=PHI_INDEX,
-                target_weights=TARGET_WEIGHTS
+                target_weights=TARGET_WEIGHTS,
+                mean_weights=MEAN_WEIGHTS
             )
 
             loss.backward()
@@ -262,7 +265,8 @@ if TRAIN:
                     mu,
                     logvar,
                     phi_index=PHI_INDEX,
-                    target_weights=TARGET_WEIGHTS
+                    target_weights=TARGET_WEIGHTS,
+                    mean_weights=MEAN_WEIGHTS
                 )
                 val_loss += loss.item() * xb.size(0)
 
