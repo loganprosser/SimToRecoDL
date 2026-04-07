@@ -10,6 +10,9 @@ from model import HeteroTrackNet
 from loss import paper_hetero_loss
 from helpers import print_final_validation_samples
 
+# TODO use a different learning funciton or play with rate as we go on
+# TODO get a shit ton of data and see if we can acomplish double descent??
+
 # ====== Running Flags =======
 CHECK_SHAPE = False
 TEST_TRAIN = False
