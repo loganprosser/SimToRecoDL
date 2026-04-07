@@ -8,13 +8,37 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-def angle_diff(pred, target):
-    return torch.atan2(
-        torch.sin(pred - target),
-        torch.cos(pred - target)
-    )
+from helpers import angle_diff
+
+def hetero_gaussian_nll_with_phi(
+    y,
+    mu,
+    logvar,
+    phi_index=None,
+    min_logvar=-10.0,
+    max_logvar=10.0,
+    target_weights=None
+):
+    logvar = torch.clamp(logvar, min=min_logvar, max=max_logvar)
+
+    diff = y - mu
+
+    if phi_index is not None:
+        diff = diff.clone()
+        diff[:, phi_index] = angle_diff(mu[:, phi_index], y[:, phi_index])
+
+    sq_error = diff ** 2
+    loss = 0.5 * (logvar + sq_error * torch.exp(-logvar))
+
+    if target_weights is not None: # currently weights both mean and variacnce equally maybe change?
+        target_weights = target_weights.to(y.device)
+        loss = loss * target_weights
+
+    return loss.mean()
+
 
 def paper_hetero_loss(y, mu, logvar, phi_idx=2, clamp_min=-10.0, clamp_max=5.0, target_weights=None):
+    # this loss kinda sucks ass easily beaten by plain MSE
     logvar = torch.clamp(logvar, clamp_min, clamp_max)
 
     # ----- Mean term: pure squared error -----
@@ -37,7 +61,6 @@ def paper_hetero_loss(y, mu, logvar, phi_idx=2, clamp_min=-10.0, clamp_max=5.0, 
         target_weights = target_weights.to(y.device)
         mse = mse * target_weights
         nll = nll * target_weights
-    
     
     return mse.mean() + nll.mean()
 

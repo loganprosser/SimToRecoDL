@@ -7,7 +7,7 @@ import pandas as pd
 import random
 
 from model import HeteroTrackNet
-from loss import paper_hetero_loss
+from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi
 from helpers import print_final_validation_samples
 
 #TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
@@ -22,6 +22,8 @@ TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
 
 BATCH_SIZE = 256
 HIDDEN_LAYERS = [256, 256, 64]
+
+CRITERION = hetero_gaussian_nll_with_phi
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
@@ -201,7 +203,14 @@ if TEST_TRAIN:
     print("logvar shape:", logvar.shape)
     print("target shape:", yb.shape)
 
-    loss = paper_hetero_loss(yb, mu, logvar)
+    loss = CRITERION(
+        yb,
+        mu,
+        logvar,
+        phi_index=PHI_INDEX,
+        target_weights=TARGET_WEIGHTS
+        )
+    
     print("initial loss:", loss.item())
 
 
@@ -220,7 +229,13 @@ if TRAIN:
             optimizer.zero_grad()
 
             mu, logvar = model(xb)
-            loss = paper_hetero_loss(yb, mu, logvar, target_weights=TARGET_WEIGHTS)
+            loss = CRITERION(
+                yb,
+                mu,
+                logvar,
+                phi_index=PHI_INDEX,
+                target_weights=TARGET_WEIGHTS
+            )
 
             loss.backward()
             optimizer.step()
@@ -242,7 +257,13 @@ if TRAIN:
 
                 mu, logvar = model(xb)
 
-                loss = paper_hetero_loss(yb, mu, logvar, target_weights=TARGET_WEIGHTS)
+                loss = CRITERION(
+                    yb,
+                    mu,
+                    logvar,
+                    phi_index=PHI_INDEX,
+                    target_weights=TARGET_WEIGHTS
+                )
                 val_loss += loss.item() * xb.size(0)
 
                 # de-normalize to original physical units

@@ -8,6 +8,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+from helpers import angle_diff
+
 #TODO impliment and test recurrent neural network (GRU vs LSTM plain RNN?)
 #TODO implement and test transformer based NN 
 

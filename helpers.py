@@ -6,6 +6,11 @@ import numpy as np
 import pandas as pd
 import random
 
+def angle_diff(pred, target):
+    return torch.atan2(
+        torch.sin(pred - target),
+        torch.cos(pred - target)
+    )
 
 def print_final_validation_samples(
     model,
