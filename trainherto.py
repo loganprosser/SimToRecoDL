@@ -22,7 +22,7 @@ MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 3.0])
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
-HIDDEN_LAYERS = [256, 256, 64]
+HIDDEN_LAYERS = [512, 512, 128]
 
 CRITERION = hetero_gaussian_nll_with_phi
 
