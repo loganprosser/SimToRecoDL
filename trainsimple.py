@@ -8,7 +8,12 @@ import pandas as pd
 import random
 
 from model import SimpleTrackNet, TestTrackNet, HeteroTrackNet
-from loss import hetero_loss
+from helpers import print_final_validation_samples
+
+# ====== Running flags ======
+PRINT_FINAL_VAL_SAMPLES = True
+
+
 
 # ===== Picking Device ========
 device = torch.device(
@@ -53,6 +58,8 @@ TARGET_COLS = [
     "pca_dz"
 ]
 
+PHI_INDEX = TARGET_COLS.index("pca_phi")
+
 FEATURE_COLS = []
 
 for j in range(1, 7):  # since N_LAYERS = 6
@@ -63,6 +70,9 @@ for j in range(1, 7):  # since N_LAYERS = 6
         f"hit_{j}_r",
         f"hit_{j}_mask"
     ]
+
+def wrapped_angle_diff(pred, target):
+    return torch.atan2(torch.sin(pred - target), torch.cos(pred - target))
 
 # ====== PULL NUMPY ARRAYS ======
 X = df[FEATURE_COLS].to_numpy(dtype=np.float32)
@@ -89,6 +99,30 @@ X_train = X[train_idx]
 X_val   = X[val_idx]
 Y_train = Y[train_idx]
 Y_val   = Y[val_idx]
+
+# ==== Normalize inputs ====
+x_mean = X_train.mean(axis=0)
+x_std = X_train.std(axis=0)
+x_std[x_std < 1e-8] = 1.0
+
+X_train = (X_train - x_mean) / x_std
+X_val   = (X_val   - x_mean) / x_std
+
+# ==== Normalize targets ====
+y_mean = Y_train.mean(axis=0)
+y_std = Y_train.std(axis=0)
+y_std[y_std < 1e-8] = 1.0
+
+Y_train = (Y_train - y_mean) / y_std
+Y_val   = (Y_val   - y_mean) / y_std
+
+# tensors for denorm
+y_mean_t = torch.tensor(y_mean, dtype=torch.float32, device=device)
+y_std_t  = torch.tensor(y_std, dtype=torch.float32, device=device)
+
+def denormalize_targets(y_norm):
+    return y_norm * y_std_t + y_mean_t
+
 
 # ====== CONVERT TO TENSORS ======
 X_train = torch.tensor(X_train, dtype=torch.float32)
@@ -132,8 +166,8 @@ input_dim = X_train.shape[1]
 # === Init Model =====
 
 #model = TestTrackNet(input_dim=input_dim, hidden_dim=64, output_dim=5)
-model = SipleTrackNet(
-    input_dim=X.shape[1],
+model = SimpleTrackNet(
+    input_dim=input_dim,
     hidden_layers=[256, 256, 64],   #128, 128, 64]
     use_batchnorm=False,
     dropout=0.00,
@@ -191,16 +225,58 @@ for epoch in range(EPOCHS):
     
     model.eval()
     val_loss = 0.0
-    
+
+    total_val_mae = torch.zeros(len(TARGET_COLS), device=device)
+    total_val_sq  = torch.zeros(len(TARGET_COLS), device=device)
+    total_count = 0
+
     with torch.no_grad():
         for xb, yb in val_loader:
             xb, yb = xb.to(device), yb.to(device)
+
             preds = model(xb)
             loss = criterion(preds, yb)
             val_loss += loss.item() * xb.size(0)
-            
+
+            # ==== DENORMALIZE (if using normalization) ====
+            preds_phys = denormalize_targets(preds)
+            yb_phys    = denormalize_targets(yb)
+
+            diff = preds_phys - yb_phys
+
+            # wrap phi correctly
+            diff[:, PHI_INDEX] = wrapped_angle_diff(
+                preds_phys[:, PHI_INDEX],
+                yb_phys[:, PHI_INDEX]
+            )
+
+            total_val_mae += diff.abs().sum(dim=0)
+            total_val_sq  += (diff ** 2).sum(dim=0)
+            total_count   += xb.size(0)
+
     val_loss /= len(val_loader.dataset)
+
+    per_target_mae = (total_val_mae / total_count).detach().cpu().numpy()
+    per_target_rmse = torch.sqrt(total_val_sq / total_count).detach().cpu().numpy()
+
+    overall_val_mae = per_target_mae.mean()
+    overall_val_rmse = per_target_rmse.mean()
     
-    print(f"EPOCH {epoch + 1:2d}/{EPOCHS} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
-            
+    print(f"EPOCH {epoch + 1:2d}/{EPOCHS} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | Val Mean MAE: {overall_val_mae:.6f} | Val Mean RMSE: {overall_val_rmse:.6f}")
+
+    print("   Per-target MAE:")
+    for name, val in zip(TARGET_COLS, per_target_mae):
+        print(f"      {name}: {val:.6f}")
+
+    print("   Per-target RMSE:")
+    for name, val in zip(TARGET_COLS, per_target_rmse):
+        print(f"      {name}: {val:.6f}")
     
+if PRINT_FINAL_VAL_SAMPLES:
+    print_final_validation_samples(
+        model, val_loader, device,
+        denormalize_targets, y_std_t,
+        TARGET_COLS, PHI_INDEX,
+        wrapped_angle_diff,
+        num_examples=4
+    )
