@@ -15,7 +15,7 @@ from helpers import print_final_validation_samples
 # TODO get a shit ton of data and see if we can acomplish double descent??
 
 # ====== Running Constants =======
-EPOCHS = 1000
+EPOCHS = 100
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
