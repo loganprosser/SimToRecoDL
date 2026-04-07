@@ -16,7 +16,7 @@ from helpers import print_final_validation_samples
 # TODO get a shit ton of data and see if we can acomplish double descent??
 
 # ====== Running Constants =======
-EPOCHS = 1000
+EPOCHS = 10000
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 3.0])
 
