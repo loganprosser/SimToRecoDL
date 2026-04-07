@@ -11,7 +11,7 @@ from model import SimpleTrackNet, TestTrackNet, HeteroTrackNet
 from helpers import print_final_validation_samples
 
 # ====== Running flags ======
-PRINT_FINAL_VAL_SAMPLES = True
+PRINT_FINAL_VAL_SAMPLES = False # not working need sigma for the funciton
 
 
 
