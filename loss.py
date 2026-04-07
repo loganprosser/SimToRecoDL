@@ -33,7 +33,7 @@ def paper_hetero_loss(y, mu, logvar, phi_idx=2, clamp_min=-10.0, clamp_max=5.0, 
         logvar + residual_detached ** 2 * torch.exp(-logvar)
     )
 
-    if target_weights:
+    if target_weights is not None:
         target_weights = target_weights.to(y.device)
         mse = mse * target_weights
         nll = nll * target_weights

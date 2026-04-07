@@ -10,6 +10,7 @@ from model import HeteroTrackNet
 from loss import paper_hetero_loss
 from helpers import print_final_validation_samples
 
+#TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent??
 
