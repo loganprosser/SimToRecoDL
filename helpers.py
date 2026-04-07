@@ -70,3 +70,8 @@ def print_final_validation_samples(
                 shown += 1
                 if shown >= num_examples:
                     return
+                
+def denormalize_targets(y_norm, y_std_t,):
+    return y_norm * y_std_t + y_mean_t
+
+
