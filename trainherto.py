@@ -187,7 +187,7 @@ print(model)
 
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 # scheduler decreases the learnring rate as we go on with cosine decay
-scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
 
 
 # ====== trial forward pass ======
