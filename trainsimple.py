@@ -10,6 +10,10 @@ import random
 from model import SimpleTrackNet, TestTrackNet, HeteroTrackNet
 from helpers import print_final_validation_samples
 
+# ===== Constants ======
+EPOCHS = 100
+
+
 # ====== Running flags ======
 PRINT_FINAL_VAL_SAMPLES = False # not working need sigma for the funciton
 
@@ -186,6 +190,8 @@ criterion = nn.MSELoss() # use for simple models
 #optimizer = optim.Adam(model.parameters(), lr=1e-3) # use for simple models
 
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
+
 
 # ====== trial forward pass ======
 TEST_TRAIN = False
@@ -201,7 +207,7 @@ if TEST_TRAIN:
     print("initial loss:", loss.item())
 
 # ===== Training loop =====
-EPOCHS = 80
+EPOCHS = EPOCHS
 
 for epoch in range(EPOCHS):
     # ===== TRAIN ======

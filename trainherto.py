@@ -21,7 +21,7 @@ TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
-HIDDEN_LAYERS=[4096, 4096, 2048, 1024, 512]
+HIDDEN_LAYERS = [256, 256, 64]
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
