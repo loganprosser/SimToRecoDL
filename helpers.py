@@ -232,8 +232,18 @@ def plot_pred_vs_true_distributions(
         pred_vals = y_pred[:, i]
 
         # use shared bin edges so the two histograms are directly comparable
+        # default bounds
         vmin = min(true_vals.min(), pred_vals.min())
         vmax = max(true_vals.max(), pred_vals.max())
+        
+        # control bounds here for the plot
+        if i == 0:
+            vmin, vmax = -.1, .1
+            
+        elif i == 2:
+            vmin, vmax = -.005, .005
+        
+        
         bin_edges = np.linspace(vmin, vmax, bins + 1)
 
         ax.hist(true_vals, bins=bin_edges, alpha=0.5, label="Actual", density=density)
