@@ -42,8 +42,8 @@ PRINT_FINAL_VAL_SAMPLES = True
 TRACK_GOLDEN = True
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = "goldenmodelsRUN2"
-GOLDEN_SUMMARY_FILE = "goldeniterationRUN2.txt"
+GOLDEN_MODEL_DIR = "goldenmodelsRUN3"
+GOLDEN_SUMMARY_FILE = "goldeniterationRUN3.txt"
 
 # ===== Picking Device ========
 device = torch.device(
