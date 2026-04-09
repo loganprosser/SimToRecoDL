@@ -10,14 +10,14 @@ import random
 from model import HeteroTrackNet
 from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi
 from helpers import (
-    print_final_validation_samples,
-    wrapped_angle_diff,
-    denormalize_targets,
-    format_epoch_report,
-    save_golden_model,
-    write_final_golden_summary
-)
-
+        print_final_validation_samples,
+        wrapped_angle_diff,
+        denormalize_targets,
+        format_epoch_report,
+        save_golden_model,
+        write_final_golden_summary,
+        make_val_distribution_plots
+    )
 #TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent??
@@ -40,6 +40,7 @@ TEST_TRAIN = False
 TRAIN = True
 PRINT_FINAL_VAL_SAMPLES = True
 TRACK_GOLDEN = True
+PLOT_VAL_DISTRIBUTIONS = True
 
 # ====== Golden model settings ======
 GOLDEN_MODEL_DIR = "goldenmodelsRUN3"
@@ -397,4 +398,20 @@ if PRINT_FINAL_VAL_SAMPLES:
         TARGET_COLS, PHI_INDEX,
         wrapped_angle_diff,
         num_examples=4
+    )
+    
+if PLOT_VAL_DISTRIBUTIONS:
+    make_val_distribution_plots(
+        model=model,
+        val_loader=val_loader,
+        device=device,
+        y_mean_t=y_mean_t,
+        y_std_t=y_std_t,
+        target_cols=TARGET_COLS,
+        phi_index=PHI_INDEX,
+        denormalize_targets=denormalize_targets,
+        save_path="plots/val_pred_vs_true_distributions.png",
+        bins=100,
+        density=True,
+        show=True
     )
