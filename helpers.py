@@ -238,7 +238,8 @@ def plot_pred_vs_true_distributions(
         
         # control bounds here for the plot
         if i == 0:
-            vmin, vmax = -.1, .1
+            #vmin, vmax = -.1, .1
+            vmin, vmax = -.05, .05
             
         elif i == 3:
             vmin, vmax = -.005, .005
