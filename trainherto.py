@@ -235,15 +235,15 @@ if TRAIN:
     if TRACK_GOLDEN:
         os.makedirs(GOLDEN_MODEL_DIR, exist_ok=True)
 
-    best_vals = {
-        "best_val_loss": float("inf"),
-        "best_mean_mae": float("inf"),
-        "best_mean_rmse": float("inf"),
-    }
+        best_vals = {
+            "best_val_loss": float("inf"),
+            "best_mean_mae": float("inf"),
+            "best_mean_rmse": float("inf"),
+        }
 
-    for name in TARGET_COLS:
-        best_vals[f"best_mae_{name}"] = float("inf")
-        best_vals[f"best_rmse_{name}"] = float("inf")
+        for name in TARGET_COLS:
+            best_vals[f"best_mae_{name}"] = float("inf")
+            best_vals[f"best_rmse_{name}"] = float("inf")
 
         best_reports = {}
 
