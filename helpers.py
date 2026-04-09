@@ -89,10 +89,8 @@ def format_epoch_report(
     train_loss,
     val_loss,
     overall_val_mae,
-    overall_val_mse,
     overall_val_rmse,
     per_target_mae,
-    per_target_mse,
     per_target_rmse,
     target_cols
 ):
@@ -103,7 +101,6 @@ def format_epoch_report(
         f"Train Loss: {train_loss:.6f} | "
         f"Val Loss: {val_loss:.6f} | "
         f"Val Mean MAE: {overall_val_mae:.6f} | "
-        f"Val Mean MSE: {overall_val_mse:.6f} | "
         f"Val Mean RMSE: {overall_val_rmse:.6f}"
     )
 
@@ -111,16 +108,11 @@ def format_epoch_report(
     for name, val in zip(target_cols, per_target_mae):
         lines.append(f"      {name}: {val:.6f}")
 
-    lines.append("   Per-target MSE:")
-    for name, val in zip(target_cols, per_target_mse):
-        lines.append(f"      {name}: {val:.6f}")
-
     lines.append("   Per-target RMSE:")
     for name, val in zip(target_cols, per_target_rmse):
         lines.append(f"      {name}: {val:.6f}")
 
     return "\n".join(lines)
-
 
 # ===== Golden model tracking =====
 def save_golden_model(

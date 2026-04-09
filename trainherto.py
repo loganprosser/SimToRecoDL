@@ -238,13 +238,11 @@ if TRAIN:
         best_vals = {
             "val_loss": float("inf"),
             "mean_mae": float("inf"),
-            "mean_mse": float("inf"),
             "mean_rmse": float("inf"),
         }
 
         for name in TARGET_COLS:
             best_vals[f"mae_{name}"] = float("inf")
-            best_vals[f"mse_{name}"] = float("inf")
             best_vals[f"rmse_{name}"] = float("inf")
 
         best_reports = {}
@@ -315,11 +313,9 @@ if TRAIN:
         val_loss /= len(val_loader.dataset)
 
         per_target_mae = (total_val_mae / total_count).detach().cpu().numpy()
-        per_target_mse = (total_val_sq / total_count).detach().cpu().numpy()
-        per_target_rmse = np.sqrt(per_target_mse)
+        per_target_rmse = np.sqrt((total_val_sq / total_count).detach().cpu().numpy())
 
         overall_val_mae = per_target_mae.mean()
-        overall_val_mse = per_target_mse.mean()
         overall_val_rmse = per_target_rmse.mean()
 
         # ===== build report string =====
@@ -329,10 +325,8 @@ if TRAIN:
             train_loss,
             val_loss,
             overall_val_mae,
-            overall_val_mse,
             overall_val_rmse,
             per_target_mae,
-            per_target_mse,
             per_target_rmse,
             TARGET_COLS
         )
@@ -376,10 +370,6 @@ if TRAIN:
                 best_vals["mean_mae"] = overall_val_mae
                 save("best_mean_mae", overall_val_mae)
 
-            if overall_val_mse < best_vals["mean_mse"]:
-                best_vals["mean_mse"] = overall_val_mse
-                save("best_mean_mse", overall_val_mse)
-
             if overall_val_rmse < best_vals["mean_rmse"]:
                 best_vals["mean_rmse"] = overall_val_rmse
                 save("best_mean_rmse", overall_val_rmse)
@@ -389,10 +379,6 @@ if TRAIN:
                 if per_target_mae[i] < best_vals[f"mae_{name}"]:
                     best_vals[f"mae_{name}"] = per_target_mae[i]
                     save(f"best_mae_{name}", per_target_mae[i])
-
-                if per_target_mse[i] < best_vals[f"mse_{name}"]:
-                    best_vals[f"mse_{name}"] = per_target_mse[i]
-                    save(f"best_mse_{name}", per_target_mse[i])
 
                 if per_target_rmse[i] < best_vals[f"rmse_{name}"]:
                     best_vals[f"rmse_{name}"] = per_target_rmse[i]
