@@ -240,9 +240,8 @@ def plot_pred_vs_true_distributions(
         if i == 0:
             vmin, vmax = -.1, .1
             
-        elif i == 2:
+        elif i == 3:
             vmin, vmax = -.005, .005
-        
         
         bin_edges = np.linspace(vmin, vmax, bins + 1)
 
