@@ -9,7 +9,14 @@ import random
 
 from model import HeteroTrackNet
 from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi
-from helpers import print_final_validation_samples
+from helpers import (
+    print_final_validation_samples,
+    wrapped_angle_diff,
+    denormalize_targets,
+    format_epoch_report,
+    save_golden_model,
+    write_final_golden_summary
+)
 
 #TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
 # TODO use a different learning funciton or play with rate as we go on
@@ -160,12 +167,6 @@ PHI_INDEX = TARGET_COLS.index("pca_phi")
 y_mean_t = torch.tensor(y_mean, dtype=torch.float32, device=device)
 y_std_t = torch.tensor(y_std, dtype=torch.float32, device=device)
 
-def wrapped_angle_diff(pred, target):
-    return torch.atan2(torch.sin(pred - target), torch.cos(pred - target))
-
-def denormalize_targets(y_norm):
-    return y_norm * y_std_t + y_mean_t
-
 # ====== CHECK SHAPES ======
 if CHECK_SHAPE:
     print("X_train shape:", X_train.shape)
@@ -200,87 +201,6 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_mi
 
 # TODO Fix and put these in helpers tommorow: 
 # === temp helper functions =====
-def denormalize_targets(y_norm):
-    return y_norm * y_std_t + y_mean_t
-
-def format_epoch_report(
-    epoch,
-    total_epochs,
-    train_loss,
-    val_loss,
-    overall_val_mae,
-    overall_val_mse,
-    overall_val_rmse,
-    per_target_mae,
-    per_target_mse,
-    per_target_rmse,
-    target_cols
-):
-    lines = []
-
-    lines.append(
-        f"EPOCH {epoch + 1}/{total_epochs} | "
-        f"Train Loss: {train_loss:.6f} | "
-        f"Val Loss: {val_loss:.6f} | "
-        f"Val Mean MAE: {overall_val_mae:.6f} | "
-        f"Val Mean MSE: {overall_val_mse:.6f} | "
-        f"Val Mean RMSE: {overall_val_rmse:.6f}"
-    )
-
-    lines.append("   Per-target MAE:")
-    for name, val in zip(target_cols, per_target_mae):
-        lines.append(f"      {name}: {val:.6f}")
-
-    lines.append("   Per-target MSE:")
-    for name, val in zip(target_cols, per_target_mse):
-        lines.append(f"      {name}: {val:.6f}")
-
-    lines.append("   Per-target RMSE:")
-    for name, val in zip(target_cols, per_target_rmse):
-        lines.append(f"      {name}: {val:.6f}")
-
-    return "\n".join(lines)
-
-
-def save_golden_model(metric_tag, metric_value, epoch, report_text):
-    os.makedirs(GOLDEN_MODEL_DIR, exist_ok=True)
-
-    save_path = os.path.join(GOLDEN_MODEL_DIR, f"{metric_tag}.pt")
-
-    torch.save(
-        {
-            "metric_tag": metric_tag,
-            "metric_value": float(metric_value),
-            "epoch": epoch + 1,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "target_cols": TARGET_COLS,
-            "feature_cols": FEATURE_COLS,
-            "y_mean": y_mean,
-            "y_std": y_std,
-            "x_mean": x_mean,
-            "x_std": x_std,
-            "hidden_layers": HIDDEN_LAYERS,
-            "batch_size": BATCH_SIZE,
-            "seed": SEED,
-            "report_text": report_text,
-        },
-        save_path
-    )
-
-
-def write_final_golden_summary(best_reports, best_values):
-    with open(GOLDEN_SUMMARY_FILE, "w") as f:
-        f.write("FINAL BEST RESULTS BY METRIC\n")
-        f.write("=" * 100 + "\n\n")
-
-        for metric_name in best_reports:
-            f.write(f"{metric_name}: {best_values[metric_name]:.6f}\n")
-            f.write(best_reports[metric_name] + "\n")
-            f.write("\n" + "-" * 100 + "\n\n")
-            
-
 
 
 # ====== trial forward pass ======
@@ -313,8 +233,7 @@ TARGET_WEIGHTS = TARGET_WEIGHTS
 if TRAIN:
 
     if TRACK_GOLDEN:
-        import os
-        os.makedirs("goldenmodels", exist_ok=True)
+        os.makedirs(GOLDEN_MODEL_DIR, exist_ok=True)
 
         best_vals = {
             "val_loss": float("inf"),
@@ -379,8 +298,8 @@ if TRAIN:
                 )
                 val_loss += loss.item() * xb.size(0)
 
-                mu_phys = denormalize_targets(mu)
-                yb_phys = denormalize_targets(yb)
+                mu_phys = denormalize_targets(mu, y_mean_t, y_std_t)
+                yb_phys = denormalize_targets(yb, y_mean_t, y_std_t)
 
                 diff = mu_phys - yb_phys
 
@@ -404,13 +323,18 @@ if TRAIN:
         overall_val_rmse = per_target_rmse.mean()
 
         # ===== build report string =====
-        report = (
-            f"EPOCH {epoch + 1}/{EPOCHS} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | "
-            f"Val Mean MAE: {overall_val_mae:.6f} | Val Mean MSE: {overall_val_mse:.6f} | Val Mean RMSE: {overall_val_rmse:.6f}\n"
-            "   Per-target MAE:\n" +
-            "\n".join([f"      {n}: {v:.6f}" for n, v in zip(TARGET_COLS, per_target_mae)]) +
-            "\n   Per-target RMSE:\n" +
-            "\n".join([f"      {n}: {v:.6f}" for n, v in zip(TARGET_COLS, per_target_rmse)])
+        report = format_epoch_report(
+            epoch,
+            EPOCHS,
+            train_loss,
+            val_loss,
+            overall_val_mae,
+            overall_val_mse,
+            overall_val_rmse,
+            per_target_mae,
+            per_target_mse,
+            per_target_rmse,
+            TARGET_COLS
         )
 
         print(report)
@@ -419,7 +343,28 @@ if TRAIN:
         if TRACK_GOLDEN:
 
             def save(name, value):
-                save_golden_model(name, value, epoch, report)
+                save_golden_model(
+                    model,
+                    optimizer,
+                    scheduler,
+                    name,
+                    value,
+                    epoch,
+                    report,
+                    GOLDEN_MODEL_DIR,
+                    {
+                        "target_cols": TARGET_COLS,
+                        "feature_cols": FEATURE_COLS,
+                        "y_mean": y_mean,
+                        "y_std": y_std,
+                        "x_mean": x_mean,
+                        "x_std": x_std,
+                        "hidden_layers": HIDDEN_LAYERS,
+                        "batch_size": BATCH_SIZE,
+                        "seed": SEED,
+                        "report_text": report,
+                    }
+                )
                 best_reports[name] = report
 
             # overall
@@ -457,18 +402,13 @@ if TRAIN:
 
     # ===== write FINAL summary ONLY ONCE =====
     if TRACK_GOLDEN:
-        with open("goldeniteration.txt", "w") as f:
-            for k in best_reports:
-                f.write(f"{k}\n")
-                f.write(best_reports[k] + "\n\n")
+        write_final_golden_summary(GOLDEN_SUMMARY_FILE, best_reports, best_vals)
                 
 if PRINT_FINAL_VAL_SAMPLES:
     print_final_validation_samples(
         model, val_loader, device,
-        denormalize_targets, y_std_t,
+        denormalize_targets, y_mean_t, y_std_t,
         TARGET_COLS, PHI_INDEX,
         wrapped_angle_diff,
         num_examples=4
     )
-    
-    
