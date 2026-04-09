@@ -235,15 +235,15 @@ if TRAIN:
     if TRACK_GOLDEN:
         os.makedirs(GOLDEN_MODEL_DIR, exist_ok=True)
 
-        best_vals = {
-            "val_loss": float("inf"),
-            "mean_mae": float("inf"),
-            "mean_rmse": float("inf"),
-        }
+    best_vals = {
+        "best_val_loss": float("inf"),
+        "best_mean_mae": float("inf"),
+        "best_mean_rmse": float("inf"),
+    }
 
-        for name in TARGET_COLS:
-            best_vals[f"mae_{name}"] = float("inf")
-            best_vals[f"rmse_{name}"] = float("inf")
+    for name in TARGET_COLS:
+        best_vals[f"best_mae_{name}"] = float("inf")
+        best_vals[f"best_rmse_{name}"] = float("inf")
 
         best_reports = {}
 
@@ -362,26 +362,26 @@ if TRAIN:
                 best_reports[name] = report
 
             # overall
-            if val_loss < best_vals["val_loss"]:
-                best_vals["val_loss"] = val_loss
+            if val_loss < best_vals["best_val_loss"]:
+                best_vals["best_val_loss"] = val_loss
                 save("best_val_loss", val_loss)
 
-            if overall_val_mae < best_vals["mean_mae"]:
-                best_vals["mean_mae"] = overall_val_mae
+            if overall_val_mae < best_vals["best_mean_mae"]:
+                best_vals["best_mean_mae"] = overall_val_mae
                 save("best_mean_mae", overall_val_mae)
 
-            if overall_val_rmse < best_vals["mean_rmse"]:
-                best_vals["mean_rmse"] = overall_val_rmse
+            if overall_val_rmse < best_vals["best_mean_rmse"]:
+                best_vals["best_mean_rmse"] = overall_val_rmse
                 save("best_mean_rmse", overall_val_rmse)
 
             # per target
             for i, name in enumerate(TARGET_COLS):
-                if per_target_mae[i] < best_vals[f"mae_{name}"]:
-                    best_vals[f"mae_{name}"] = per_target_mae[i]
+                if per_target_mae[i] < best_vals[f"best_mae_{name}"]:
+                    best_vals[f"best_mae_{name}"] = per_target_mae[i]
                     save(f"best_mae_{name}", per_target_mae[i])
 
-                if per_target_rmse[i] < best_vals[f"rmse_{name}"]:
-                    best_vals[f"rmse_{name}"] = per_target_rmse[i]
+                if per_target_rmse[i] < best_vals[f"best_rmse_{name}"]:
+                    best_vals[f"best_rmse_{name}"] = per_target_rmse[i]
                     save(f"best_rmse_{name}", per_target_rmse[i])
 
         scheduler.step()
