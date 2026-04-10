@@ -515,3 +515,93 @@ def make_val_diagnostic_plots(
     )
 
     return paths
+
+
+def plot_training_performance(
+    history,
+    save_path=None,
+    show=True,
+):
+    epochs = history["epoch"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    axes[0].plot(epochs, history["train_loss"], label="Train loss")
+    axes[0].plot(epochs, history["val_loss"], label="Val loss")
+    axes[0].set_title("Loss over time")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].legend()
+
+    axes[1].plot(epochs, history["val_mean_mae"], label="Val mean MAE")
+    axes[1].plot(epochs, history["val_mean_rmse"], label="Val mean RMSE")
+    axes[1].set_title("Validation error over time")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Error")
+    axes[1].legend()
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def plot_learning_rate_history(
+    history,
+    save_path=None,
+    show=True,
+):
+    fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+
+    ax.plot(history["epoch"], history["learning_rate"])
+    ax.set_title("Learning rate over time")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Learning rate")
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def make_training_history_plots(
+    history,
+    output_dir="plots",
+    prefix="training",
+    show=False,
+):
+    if not history["epoch"]:
+        print("Skipping training history plots because no epochs were recorded.")
+        return {}
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    paths = {
+        "performance": os.path.join(output_dir, f"{prefix}_performance_over_time.png"),
+        "learning_rate": os.path.join(output_dir, f"{prefix}_learning_rate_over_time.png"),
+    }
+
+    plot_training_performance(
+        history=history,
+        save_path=paths["performance"],
+        show=show,
+    )
+    plot_learning_rate_history(
+        history=history,
+        save_path=paths["learning_rate"],
+        show=show,
+    )
+
+    return paths

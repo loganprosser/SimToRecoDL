@@ -6,7 +6,11 @@ import torch.nn as nn
 from model import SimpleTrackNet
 from helpers import denormalize_targets, save_model_checkpoint, wrapped_angle_diff
 from helpers_data import load_track_data, print_data_shapes, set_seed
-from helpers_vis import make_val_diagnostic_plots, print_final_validation_samples
+from helpers_vis import (
+    make_training_history_plots,
+    make_val_diagnostic_plots,
+    print_final_validation_samples,
+)
 
 # ===== Constants ======
 EPOCHS = 100
@@ -17,10 +21,12 @@ SAVE_DIR = "modelsimple"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 MODEL_PATH = os.path.join(SAVE_DIR, "simple_tracknet.pt")
+PLOT_DIR = "plots"
 
 # ====== Running flags ======
 PRINT_FINAL_VAL_SAMPLES = False # not working need sigma for the funciton
 SAVE_MODEL = True
+PLOT_TRAINING_HISTORY = True
 
 
 # ===== Picking Device ========
@@ -108,6 +114,14 @@ if TEST_TRAIN:
 
 # ===== Training loop =====
 EPOCHS = EPOCHS
+training_history = {
+    "epoch": [],
+    "train_loss": [],
+    "val_loss": [],
+    "val_mean_mae": [],
+    "val_mean_rmse": [],
+    "learning_rate": [],
+}
 
 for epoch in range(EPOCHS):
     # ===== TRAIN ======
@@ -167,6 +181,14 @@ for epoch in range(EPOCHS):
 
     overall_val_mae = per_target_mae.mean()
     overall_val_rmse = per_target_rmse.mean()
+    current_lr = optimizer.param_groups[0]["lr"]
+
+    training_history["epoch"].append(epoch + 1)
+    training_history["train_loss"].append(train_loss)
+    training_history["val_loss"].append(val_loss)
+    training_history["val_mean_mae"].append(overall_val_mae)
+    training_history["val_mean_rmse"].append(overall_val_rmse)
+    training_history["learning_rate"].append(current_lr)
     
     print(f"EPOCH {epoch + 1:2d}/{EPOCHS} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | Val Mean MAE: {overall_val_mae:.6f} | Val Mean RMSE: {overall_val_rmse:.6f}")
 
@@ -177,6 +199,20 @@ for epoch in range(EPOCHS):
     print("   Per-target RMSE:")
     for name, val in zip(TARGET_COLS, per_target_rmse):
         print(f"      {name}: {val:.6f}")
+
+    scheduler.step()
+
+if PLOT_TRAINING_HISTORY:
+    history_plot_paths = make_training_history_plots(
+        history=training_history,
+        output_dir=PLOT_DIR,
+        prefix="simple_val",
+        show=False,
+    )
+    if history_plot_paths:
+        print("Saved training history plots:")
+        for plot_name, plot_path in history_plot_paths.items():
+            print(f"  {plot_name}: {plot_path}")
     
 if PRINT_FINAL_VAL_SAMPLES:
     print_final_validation_samples(
@@ -228,7 +264,7 @@ if SAVE_PLOTS:
         y_std_t=y_std_t,
         target_cols=TARGET_COLS,
         phi_index=PHI_INDEX,
-        output_dir="plots",
+        output_dir=PLOT_DIR,
         prefix="simple_val",
         bins=100,
         density=True,

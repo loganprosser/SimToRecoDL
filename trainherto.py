@@ -14,7 +14,11 @@ from helpers import (
         save_golden_model,
         write_final_golden_summary,
     )
-from helpers_vis import make_val_diagnostic_plots, print_final_validation_samples
+from helpers_vis import (
+    make_training_history_plots,
+    make_val_diagnostic_plots,
+    print_final_validation_samples,
+)
 #TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent??
@@ -38,10 +42,13 @@ TRAIN = True
 PRINT_FINAL_VAL_SAMPLES = True
 TRACK_GOLDEN = True
 PLOT_VAL_DISTRIBUTIONS = True
+PLOT_TRAINING_HISTORY = True
 
 # ====== Golden model settings ======
 GOLDEN_MODEL_DIR = "goldenmodelsRUN3"
 GOLDEN_SUMMARY_FILE = "goldeniterationRUN3.txt"
+PLOT_DIR = "plotsCODEX"
+PLOT_PREFIX = "hetero_val"
 
 # ===== Picking Device ========
 device = torch.device(
@@ -131,6 +138,14 @@ if TEST_TRAIN:
 
 # ===== Training loop =====
 #EPOCHS = EPOCHS
+training_history = {
+    "epoch": [],
+    "train_loss": [],
+    "val_loss": [],
+    "val_mean_mae": [],
+    "val_mean_rmse": [],
+    "learning_rate": [],
+}
 
 if TRAIN:
 
@@ -219,6 +234,14 @@ if TRAIN:
 
         overall_val_mae = per_target_mae.mean()
         overall_val_rmse = per_target_rmse.mean()
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        training_history["epoch"].append(epoch + 1)
+        training_history["train_loss"].append(train_loss)
+        training_history["val_loss"].append(val_loss)
+        training_history["val_mean_mae"].append(overall_val_mae)
+        training_history["val_mean_rmse"].append(overall_val_rmse)
+        training_history["learning_rate"].append(current_lr)
 
         # ===== build report string =====
         report = format_epoch_report(
@@ -301,6 +324,18 @@ if TRAIN:
     # ===== write FINAL summary ONLY ONCE =====
     if TRACK_GOLDEN:
         write_final_golden_summary(GOLDEN_SUMMARY_FILE, best_reports, best_vals)
+
+if PLOT_TRAINING_HISTORY:
+    history_plot_paths = make_training_history_plots(
+        history=training_history,
+        output_dir=PLOT_DIR,
+        prefix="hetero_val",
+        show=False,
+    )
+    if history_plot_paths:
+        print("Saved training history plots:")
+        for plot_name, plot_path in history_plot_paths.items():
+            print(f"  {plot_name}: {plot_path}")
                 
 if PRINT_FINAL_VAL_SAMPLES:
     print_final_validation_samples(
@@ -319,7 +354,7 @@ if PLOT_VAL_DISTRIBUTIONS:
         y_std_t=y_std_t,
         target_cols=TARGET_COLS,
         phi_index=PHI_INDEX,
-        output_dir="plotsCODEX",
+        output_dir=PLOT_DIR,
         prefix="hetero_val",
         bins=100,
         density=True,
