@@ -130,8 +130,8 @@ def build_model_from_checkpoint(checkpoint, device):
         input_dim=input_dim,
         hidden_layers=hidden_layers,
         output_dim=5,
-        use_batchnorm=True,
-        dropout=0.10,
+        use_batchnorm=False,
+        dropout=0.0,
         activation=nn.ReLU
     )
 
