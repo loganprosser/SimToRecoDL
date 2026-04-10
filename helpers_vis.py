@@ -51,7 +51,7 @@ def print_final_validation_samples(
             xb = xb.to(device)
             yb = yb.to(device)
 
-            pred, _ = predict_mu_and_logvar(model, xb)
+            pred, logvar = predict_mu_and_logvar(model, xb)
 
             pred_phys = denormalize_targets(pred, y_mean_t, y_std_t)
             yb_phys = denormalize_targets(yb, y_mean_t, y_std_t)
