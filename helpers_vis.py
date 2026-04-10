@@ -259,10 +259,13 @@ def plot_pred_vs_true_scatter(
 
         vmin = min(true_vals.min(), pred_vals.min())
         vmax = max(true_vals.max(), pred_vals.max())
-
+        
         if vmin == vmax:
             vmin -= 0.5
             vmax += 0.5
+            
+        if i == 3:
+            vmin, vmax = -.5, .5
 
         ax.scatter(true_vals, pred_vals, s=5, alpha=0.25, linewidths=0)
         ax.plot([vmin, vmax], [vmin, vmax], color="black", linewidth=1.0)
@@ -311,6 +314,10 @@ def plot_pull_distributions(
         ax = axes[i]
         vals = pulls[:, i]
         finite_vals = vals[np.isfinite(vals)]
+        
+        # if i == 3:
+        #     finite_vals = np.clip(finite_vals, -5, 5)  # example bounds
+        #     ax.set_xlim(-5, 5)
 
         ax.hist(finite_vals, bins=bins, alpha=0.75, density=density)
         ax.axvline(0.0, color="black", linewidth=1.0)
