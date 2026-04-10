@@ -325,6 +325,14 @@ if TRAIN:
     if TRACK_GOLDEN:
         write_final_golden_summary(GOLDEN_SUMMARY_FILE, best_reports, best_vals)
 
+if PRINT_FINAL_VAL_SAMPLES:
+    print_final_validation_samples(
+        model, val_loader, device,
+        y_mean_t, y_std_t,
+        TARGET_COLS, PHI_INDEX,
+        num_examples=5
+    )
+
 if PLOT_TRAINING_HISTORY:
     history_plot_paths = make_training_history_plots(
         history=training_history,
@@ -336,15 +344,7 @@ if PLOT_TRAINING_HISTORY:
         print("Saved training history plots:")
         for plot_name, plot_path in history_plot_paths.items():
             print(f"  {plot_name}: {plot_path}")
-                
-if PRINT_FINAL_VAL_SAMPLES:
-    print_final_validation_samples(
-        model, val_loader, device,
-        y_mean_t, y_std_t,
-        TARGET_COLS, PHI_INDEX,
-        num_examples=5
-    )
-    
+            
 if PLOT_VAL_DISTRIBUTIONS:
     plot_paths = make_val_diagnostic_plots(
         model=model,
