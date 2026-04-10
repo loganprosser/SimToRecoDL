@@ -8,14 +8,13 @@ from model import HeteroTrackNet
 from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi
 from helpers_data import load_track_data, print_data_shapes, set_seed
 from helpers import (
-        print_final_validation_samples,
         wrapped_angle_diff,
         denormalize_targets,
         format_epoch_report,
         save_golden_model,
         write_final_golden_summary,
-        make_val_distribution_plots
     )
+from helpers_vis import make_val_diagnostic_plots, print_final_validation_samples
 #TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent??
@@ -132,7 +131,6 @@ if TEST_TRAIN:
 
 # ===== Training loop =====
 #EPOCHS = EPOCHS
-TARGET_WEIGHTS = TARGET_WEIGHTS
 
 if TRAIN:
 
@@ -253,13 +251,23 @@ if TRAIN:
                     {
                         "target_cols": TARGET_COLS,
                         "feature_cols": FEATURE_COLS,
+                        "model_type": "HeteroTrackNet",
+                        "input_dim": input_dim,
+                        "output_dim": len(TARGET_COLS),
                         "y_mean": y_mean,
                         "y_std": y_std,
                         "x_mean": x_mean,
                         "x_std": x_std,
                         "hidden_layers": HIDDEN_LAYERS,
+                        "use_batchnorm": True,
+                        "dropout": 0.10,
+                        "activation": "ReLU",
                         "batch_size": BATCH_SIZE,
                         "seed": SEED,
+                        "val_fraction": 0.2,
+                        "criterion": CRITERION.__name__,
+                        "target_weights": TARGET_WEIGHTS.tolist() if TARGET_WEIGHTS is not None else None,
+                        "mean_weights": MEAN_WEIGHTS.tolist() if MEAN_WEIGHTS is not None else None,
                         "report_text": report,
                     }
                 )
@@ -297,14 +305,13 @@ if TRAIN:
 if PRINT_FINAL_VAL_SAMPLES:
     print_final_validation_samples(
         model, val_loader, device,
-        denormalize_targets, y_mean_t, y_std_t,
+        y_mean_t, y_std_t,
         TARGET_COLS, PHI_INDEX,
-        wrapped_angle_diff,
-        num_examples=4
+        num_examples=5
     )
     
 if PLOT_VAL_DISTRIBUTIONS:
-    make_val_distribution_plots(
+    plot_paths = make_val_diagnostic_plots(
         model=model,
         val_loader=val_loader,
         device=device,
@@ -312,9 +319,12 @@ if PLOT_VAL_DISTRIBUTIONS:
         y_std_t=y_std_t,
         target_cols=TARGET_COLS,
         phi_index=PHI_INDEX,
-        denormalize_targets=denormalize_targets,
-        save_path="plots/val_pred_vs_true_distributions.png",
+        output_dir="plots",
+        prefix="hetero_val",
         bins=100,
         density=True,
         show=True
     )
+    print("Saved validation diagnostic plots:")
+    for plot_name, plot_path in plot_paths.items():
+        print(f"  {plot_name}: {plot_path}")

@@ -3,12 +3,16 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 
-from model import SimpleTrackNet, TestTrackNet, HeteroTrackNet
-from helpers import denormalize_targets, print_final_validation_samples, wrapped_angle_diff
+from model import SimpleTrackNet
+from helpers import denormalize_targets, save_model_checkpoint, wrapped_angle_diff
 from helpers_data import load_track_data, print_data_shapes, set_seed
+from helpers_vis import make_val_diagnostic_plots, print_final_validation_samples
 
 # ===== Constants ======
 EPOCHS = 100
+HIDDEN_LAYERS = [512, 512, 128]
+USE_BATCHNORM = False
+DROPOUT = 0.0
 SAVE_DIR = "modelsimple"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -68,9 +72,9 @@ input_dim = X_train.shape[1]
 #model = TestTrackNet(input_dim=input_dim, hidden_dim=64, output_dim=5)
 model = SimpleTrackNet(
     input_dim=input_dim,
-    hidden_layers=[512, 512, 128],   #128, 128, 64]. [256, 256, 64]
-    use_batchnorm=False,
-    dropout=0.00,
+    hidden_layers=HIDDEN_LAYERS,   #128, 128, 64]. [256, 256, 64]
+    use_batchnorm=USE_BATCHNORM,
+    dropout=DROPOUT,
     activation=nn.ReLU
 )
 
@@ -177,30 +181,38 @@ for epoch in range(EPOCHS):
 if PRINT_FINAL_VAL_SAMPLES:
     print_final_validation_samples(
         model, val_loader, device,
-        denormalize_targets, y_mean_t, y_std_t,
+        y_mean_t, y_std_t,
         TARGET_COLS, PHI_INDEX,
-        wrapped_angle_diff,
         num_examples=4
     )
     
-SAVE_MODEL = False
 if SAVE_MODEL:
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "model_type": "SimpleTrackNet",
-        "input_dim": input_dim,
-        "hidden_layers": [512, 512, 128],
-        "feature_cols": FEATURE_COLS,
-        "target_cols": TARGET_COLS,
-        "x_mean": x_mean.tolist() if hasattr(x_mean, "tolist") else x_mean,
-        "x_std": x_std.tolist() if hasattr(x_std, "tolist") else x_std,
-        "y_mean": y_mean.tolist() if hasattr(y_mean, "tolist") else y_mean,
-        "y_std": y_std.tolist() if hasattr(y_std, "tolist") else y_std,
-        "use_batchnorm": False,
-        "dropout": 0.0,
-        "activation": "ReLU",
-        "seed": SEED,
-    }, MODEL_PATH)
+    save_model_checkpoint(
+        save_path=MODEL_PATH,
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        epoch=EPOCHS,
+        metadata={
+            "model_type": "SimpleTrackNet",
+            "input_dim": input_dim,
+            "output_dim": len(TARGET_COLS),
+            "hidden_layers": HIDDEN_LAYERS,
+            "feature_cols": FEATURE_COLS,
+            "target_cols": TARGET_COLS,
+            "x_mean": x_mean,
+            "x_std": x_std,
+            "y_mean": y_mean,
+            "y_std": y_std,
+            "use_batchnorm": USE_BATCHNORM,
+            "dropout": DROPOUT,
+            "activation": "ReLU",
+            "batch_size": BATCH_SIZE,
+            "seed": SEED,
+            "val_fraction": 0.2,
+            "criterion": criterion.__class__.__name__,
+        },
+    )
 
     print(f"Model saved to {MODEL_PATH}")
     
@@ -208,11 +220,7 @@ if SAVE_MODEL:
 SAVE_PLOTS = True
 
 if SAVE_PLOTS:
-    from helpers import make_val_distribution_plots
-
-    plot_path = os.path.join("plots", "val_distributions.png")
-
-    make_val_distribution_plots(
+    plot_paths = make_val_diagnostic_plots(
         model=model,
         val_loader=val_loader,
         device=device,
@@ -220,11 +228,13 @@ if SAVE_PLOTS:
         y_std_t=y_std_t,
         target_cols=TARGET_COLS,
         phi_index=PHI_INDEX,
-        denormalize_targets=denormalize_targets,
-        save_path=plot_path,
+        output_dir="plots",
+        prefix="simple_val",
         bins=100,
         density=True,
         show=False  # set True if you want popup
     )
 
-    print(f"Saved validation distribution plot to {plot_path}")
+    print("Saved validation diagnostic plots:")
+    for plot_name, plot_path in plot_paths.items():
+        print(f"  {plot_name}: {plot_path}")
