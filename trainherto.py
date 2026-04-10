@@ -341,7 +341,7 @@ if PLOT_TRAINING_HISTORY:
         show=False,
     )
     if history_plot_paths:
-        print("Saved training history plots:")
+        print("========== Saved training history plots: ==========")
         for plot_name, plot_path in history_plot_paths.items():
             print(f"  {plot_name}: {plot_path}")
             
@@ -360,6 +360,6 @@ if PLOT_VAL_DISTRIBUTIONS:
         density=True,
         show=True
     )
-    print("Saved validation diagnostic plots:")
+    print("========== Saved validation diagnostic plots: ==========")
     for plot_name, plot_path in plot_paths.items():
         print(f"  {plot_name}: {plot_path}")
