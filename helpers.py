@@ -155,15 +155,13 @@ def write_final_golden_summary(summary_file, best_reports, best_values):
             f.write(f"{metric_name}: {best_values[metric_name]:.6f}\n")
             f.write(best_reports[metric_name] + "\n")
             f.write("\n" + "-" * 100 + "\n\n")
-            
-            
-# ===== Ploting distributions helpers ======
+        # ===== Ploting distributions helpers ======
 def collect_val_predictions_and_targets(
     model,
     val_loader,
     device,
-    y_mean_t,
-    y_std_t,
+    y_mean_t,   # not used but kept for compatibility
+    y_std_t,    # not used but kept for compatibility
     phi_index,
     denormalize_targets,
 ):
@@ -181,12 +179,19 @@ def collect_val_predictions_and_targets(
             xb = xb.to(device)
             yb = yb.to(device)
 
-            mu, _ = model(xb)
+            out = model(xb)
 
-            mu_phys = denormalize_targets(mu, y_mean_t, y_std_t)
-            yb_phys = denormalize_targets(yb, y_mean_t, y_std_t)
+            # handle both model types
+            if isinstance(out, tuple):
+                mu = out[0]
+            else:
+                mu = out
 
-            # wrap phi predictions into [-pi, pi] if desired
+            # ✅ FIX: correct call signature
+            mu_phys = denormalize_targets(mu)
+            yb_phys = denormalize_targets(yb)
+
+            # wrap phi into [-pi, pi]
             mu_phys[:, phi_index] = torch.atan2(
                 torch.sin(mu_phys[:, phi_index]),
                 torch.cos(mu_phys[:, phi_index])
@@ -215,8 +220,7 @@ def plot_pred_vs_true_distributions(
     show=True,
 ):
     """
-    Make a 5-panel histogram figure comparing predicted vs actual
-    distributions for each track parameter.
+    Make a multi-panel histogram comparing predicted vs actual distributions.
     """
     n_targets = len(target_cols)
 
@@ -231,19 +235,15 @@ def plot_pred_vs_true_distributions(
         true_vals = y_true[:, i]
         pred_vals = y_pred[:, i]
 
-        # use shared bin edges so the two histograms are directly comparable
-        # default bounds
         vmin = min(true_vals.min(), pred_vals.min())
         vmax = max(true_vals.max(), pred_vals.max())
-        
-        # control bounds here for the plot
+
+        # manual bounds tuning
         if i == 0:
-            #vmin, vmax = -.1, .1
-            vmin, vmax = -.05, .05
-            
+            vmin, vmax = -0.05, 0.05
         elif i == 3:
-            vmin, vmax = -.005, .005
-        
+            vmin, vmax = -0.005, 0.005
+
         bin_edges = np.linspace(vmin, vmax, bins + 1)
 
         ax.hist(true_vals, bins=bin_edges, alpha=0.5, label="Actual", density=density)
@@ -281,10 +281,9 @@ def make_val_distribution_plots(
     show=True,
 ):
     """
-    Full wrapper:
-    1) collect predictions/targets on val set
-    2) de-normalize
-    3) plot predicted vs actual distributions
+    Wrapper:
+    1) collect predictions/targets
+    2) plot distributions
     """
     y_pred, y_true = collect_val_predictions_and_targets(
         model=model,
@@ -305,4 +304,3 @@ def make_val_distribution_plots(
         save_path=save_path,
         show=show,
     )
-    
