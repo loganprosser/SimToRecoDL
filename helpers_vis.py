@@ -189,6 +189,13 @@ def plot_overlap_distributions(
 
         vmin = min(true_vals.min(), pred_vals.min())
         vmax = max(true_vals.max(), pred_vals.max())
+        
+        if i == 0:
+            vmin, vmax = -.1,.1
+        
+        elif i == 3:
+            vmin, vmax = -.005, .005
+        
 
         if name in axis_limits:
             vmin, vmax = axis_limits[name]
