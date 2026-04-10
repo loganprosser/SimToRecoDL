@@ -291,15 +291,23 @@ if PRINT_FINAL_VAL_SAMPLES:
         num_examples=4
     )
     
+
 if SAVE_MODEL:
     torch.save({
         "model_state_dict": model.state_dict(),
+        "model_type": "SimpleTrackNet",
         "input_dim": input_dim,
         "hidden_layers": [512, 512, 128],
-        "x_mean": x_mean,
-        "x_std": x_std,
-        "y_mean": y_mean,
-        "y_std": y_std
+        "feature_cols": feature_cols,
+        "target_cols": target_cols,
+        "x_mean": x_mean.tolist() if hasattr(x_mean, "tolist") else x_mean,
+        "x_std": x_std.tolist() if hasattr(x_std, "tolist") else x_std,
+        "y_mean": y_mean.tolist() if hasattr(y_mean, "tolist") else y_mean,
+        "y_std": y_std.tolist() if hasattr(y_std, "tolist") else y_std,
+        "use_batchnorm": False,
+        "dropout": 0.0,
+        "activation": "ReLU",
+        "seed": SEED,
     }, MODEL_PATH)
 
     print(f"Model saved to {MODEL_PATH}")
