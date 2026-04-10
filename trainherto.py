@@ -1,14 +1,12 @@
 import os
 import torch
-from torch.utils.data import TensorDataset, DataLoader
 import torch.optim as optim
 import torch.nn as nn
 import numpy as np
-import pandas as pd
-import random
 
 from model import HeteroTrackNet
 from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi
+from helpers_data import load_track_data, print_data_shapes, set_seed
 from helpers import (
         print_final_validation_samples,
         wrapped_angle_diff,
@@ -58,126 +56,31 @@ print(f"Device set to {device}")
 # ==== Setting Seed =====
 SEED = 42
 
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(SEED)
-    torch.cuda.manual_seed_all(SEED)
-
-if torch.backends.cudnn.is_available():
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+set_seed(SEED)
 
 
-# ====== import data from the csv =======
-path = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/filtered_particles.csv"
-df = pd.read_csv(path)
+# ====== Load and prepare data =======
+data = load_track_data(batch_size=BATCH_SIZE, seed=SEED, device=device)
 
-
-# ===== Input and Output Data =====
-TARGET_COLS = [
-    "pca_c",
-    "pca_eta",
-    "pca_phi",
-    "pca_dxy",
-    "pca_dz"
-]
-
-FEATURE_COLS = []
-
-for j in range(1, 7):
-    FEATURE_COLS += [
-        f"hit_{j}_x",
-        f"hit_{j}_y",
-        f"hit_{j}_z",
-        f"hit_{j}_r",
-        f"hit_{j}_mask"
-    ]
-
-
-# ====== PULL NUMPY ARRAYS ======
-X = df[FEATURE_COLS].to_numpy(dtype=np.float32)
-Y = df[TARGET_COLS].to_numpy(dtype=np.float32)
-
-
-# ====== REPLACE SENTINEL VALUES WITH 0 ======
-X[X == -999.0] = 0.0
-
-
-# ====== TRAIN / VAL SPLIT ======
-n = len(X)
-val_fraction = 0.2
-n_val = int(n * val_fraction)
-
-rng = np.random.default_rng(seed=SEED)
-indices = rng.permutation(n)
-
-val_idx = indices[:n_val]
-train_idx = indices[n_val:]
-
-X_train = X[train_idx]
-X_val   = X[val_idx]
-Y_train = Y[train_idx]
-Y_val   = Y[val_idx]
-
-# ==== Normalize inputs from train only ====
-x_mean = X_train.mean(axis=0)
-x_std = X_train.std(axis=0)
-
-# avoid divide-by-zero for constant columns
-x_std[x_std < 1e-8] = 1.0
-
-# normalize
-X_train = (X_train - x_mean) / x_std
-X_val   = (X_val   - x_mean) / x_std
-
-# ====== OUTPUT NORMALIZATION STATS FROM TRAIN ONLY ======
-y_mean = Y_train.mean(axis=0)
-y_std = Y_train.std(axis=0)
-
-y_std[y_std < 1e-8] = 1.0
-
-Y_train = (Y_train - y_mean) / y_std
-Y_val   = (Y_val   - y_mean) / y_std
-
-
-# ====== CONVERT TO TENSORS ======
-X_train = torch.tensor(X_train, dtype=torch.float32)
-X_val   = torch.tensor(X_val, dtype=torch.float32)
-Y_train = torch.tensor(Y_train, dtype=torch.float32)
-Y_val   = torch.tensor(Y_val, dtype=torch.float32)
-
-train_dataset = TensorDataset(X_train, Y_train)
-val_dataset = TensorDataset(X_val, Y_val)
-
-
-# ====== DataLoaders ======
-BATCH_SIZE = BATCH_SIZE
-
-g = torch.Generator()
-g.manual_seed(SEED)
-
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=g)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, generator=g)
-
-PHI_INDEX = TARGET_COLS.index("pca_phi")
-
-# store normalization stats as tensors on device for de-normalizing predictions
-y_mean_t = torch.tensor(y_mean, dtype=torch.float32, device=device)
-y_std_t = torch.tensor(y_std, dtype=torch.float32, device=device)
+train_loader = data.train_loader
+val_loader = data.val_loader
+X_train = data.x_train
+X_val = data.x_val
+Y_train = data.y_train
+Y_val = data.y_val
+x_mean = data.x_mean
+x_std = data.x_std
+y_mean = data.y_mean
+y_std = data.y_std
+y_mean_t = data.y_mean_t
+y_std_t = data.y_std_t
+FEATURE_COLS = data.feature_cols
+TARGET_COLS = data.target_cols
+PHI_INDEX = data.phi_index
 
 # ====== CHECK SHAPES ======
 if CHECK_SHAPE:
-    print("X_train shape:", X_train.shape)
-    print("X_val shape:  ", X_val.shape)
-    print("Y_train shape:", Y_train.shape)
-    print("Y_val shape:  ", Y_val.shape)
-
-    xb, yb = next(iter(train_loader))
-    print("batch X shape:", xb.shape)
-    print("batch Y shape:", yb.shape)
+    print_data_shapes(data)
 
 
 # ===== Training ======
