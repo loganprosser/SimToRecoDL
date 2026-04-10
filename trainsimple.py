@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 import torch.optim as optim
@@ -12,11 +13,14 @@ from helpers import print_final_validation_samples
 
 # ===== Constants ======
 EPOCHS = 100
+SAVE_DIR = "modelsimple"
+os.makedirs(SAVE_DIR, exist_ok=True)
 
+MODEL_PATH = os.path.join(SAVE_DIR, "simple_tracknet.pt")
 
 # ====== Running flags ======
 PRINT_FINAL_VAL_SAMPLES = False # not working need sigma for the funciton
-
+SAVE_MODEL = True
 
 
 # ===== Picking Device ========
@@ -286,3 +290,16 @@ if PRINT_FINAL_VAL_SAMPLES:
         wrapped_angle_diff,
         num_examples=4
     )
+    
+if SAVE_MODEL:
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "input_dim": input_dim,
+        "hidden_layers": [512, 512, 128],
+        "x_mean": x_mean,
+        "x_std": x_std,
+        "y_mean": y_mean,
+        "y_std": y_std
+    }, MODEL_PATH)
+
+    print(f"Model saved to {MODEL_PATH}")

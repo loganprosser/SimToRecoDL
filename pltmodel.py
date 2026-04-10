@@ -12,11 +12,24 @@ from torch.utils.data import TensorDataset, DataLoader
 from model import HeteroTrackNet
 from helpers import denormalize_targets, make_val_distribution_plots
 
+# TODO save models with their architecture so we can easily use them
+# like if we use batch norm dropout and if we are using what architecture
 
 # ===== Defaults =====
 DEFAULT_CSV_PATH = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/filtered_particles.csv"
 DEFAULT_BATCH_SIZE = 256
 DEFAULT_PATTERN = "*.pt"
+
+'''
+Call this with:
+
+python pltmodel.py \
+  --model-dir goldenmodelsRUN3 \
+  --recursive \
+  --pattern "*.pt"
+
+
+'''
 
 
 # ===== Device =====
@@ -107,7 +120,8 @@ def build_val_loader_from_checkpoint(
 # ===== Model rebuild =====
 def build_model_from_checkpoint(checkpoint, device):
     feature_cols = checkpoint["feature_cols"]
-    hidden_layers = checkpoint["hidden_layers"]
+    #hidden_layers = checkpoint["hidden_layers"]
+    hidden_layers = [2048, 2048, 1024, 512]
 
     input_dim = len(feature_cols)
 
