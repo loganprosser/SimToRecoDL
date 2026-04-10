@@ -156,12 +156,13 @@ def write_final_golden_summary(summary_file, best_reports, best_values):
             f.write(best_reports[metric_name] + "\n")
             f.write("\n" + "-" * 100 + "\n\n")
         # ===== Ploting distributions helpers ======
+# ===== Ploting distributions helpers ======
 def collect_val_predictions_and_targets(
     model,
     val_loader,
     device,
-    y_mean_t,   # not used but kept for compatibility
-    y_std_t,    # not used but kept for compatibility
+    y_mean_t,
+    y_std_t,
     phi_index,
     denormalize_targets,
 ):
@@ -187,11 +188,14 @@ def collect_val_predictions_and_targets(
             else:
                 mu = out
 
-            # ✅ FIX: correct call signature
-            mu_phys = denormalize_targets(mu)
-            yb_phys = denormalize_targets(yb)
+            # de-normalize using the actual function signature
+            mu_phys = denormalize_targets(mu, y_mean_t, y_std_t)
+            yb_phys = denormalize_targets(yb, y_mean_t, y_std_t)
 
             # wrap phi into [-pi, pi]
+            mu_phys = mu_phys.clone()
+            yb_phys = yb_phys.clone()
+
             mu_phys[:, phi_index] = torch.atan2(
                 torch.sin(mu_phys[:, phi_index]),
                 torch.cos(mu_phys[:, phi_index])
@@ -208,7 +212,6 @@ def collect_val_predictions_and_targets(
     all_true = torch.cat(all_true, dim=0).numpy()
 
     return all_pred, all_true
-
 
 def plot_pred_vs_true_distributions(
     y_true,
