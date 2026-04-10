@@ -526,8 +526,14 @@ def plot_training_performance(
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-    axes[0].plot(epochs, history["train_loss"], label="Train loss")
-    axes[0].plot(epochs, history["val_loss"], label="Val loss")
+    max_loss = 5
+
+    train_loss = np.clip(history["train_loss"], None, max_loss)
+    val_loss = np.clip(history["val_loss"], None, max_loss)
+
+    axes[0].plot(epochs, train_loss, label="Train loss")
+    axes[0].plot(epochs, val_loss, label="Val loss")
+    
     axes[0].set_title("Loss over time")
     axes[0].set_xlabel("Epoch")
     axes[0].set_ylabel("Loss")
