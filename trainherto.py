@@ -24,15 +24,15 @@ from helpers_vis import (
 # TODO get a shit ton of data and see if we can acomplish double descent??
 
 # ====== Running Constants =======
-EPOCHS = 100
-TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
+EPOCHS = 10000
+TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 2.0, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 3.0])
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
-#HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!!
-HIDDEN_LAYERS = [256, 256, 64]
+#HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
+HIDDEN_LAYERS = [2048, 2048, 1024, 512] 
 CRITERION = hetero_gaussian_nll_with_phi
 
 # ====== Running Flags =======
