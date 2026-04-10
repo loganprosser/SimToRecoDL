@@ -265,8 +265,13 @@ def plot_pred_vs_true_scatter(
             vmax += 0.5
             
         if i == 3:
-            vmin, vmax = -.05, .05
-
+            vmin, vmax = -0.005, 0.005
+            ax.set_xlim(vmin, vmax)
+            ax.set_ylim(vmin, vmax)
+        else:
+            ax.set_xlim(vmin, vmax)
+            ax.set_ylim(vmin, vmax)
+            
         ax.scatter(true_vals, pred_vals, s=5, alpha=0.25, linewidths=0)
         ax.plot([vmin, vmax], [vmin, vmax], color="black", linewidth=1.0)
         ax.set_title(name)
