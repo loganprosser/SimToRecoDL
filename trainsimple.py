@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 import torch.optim as optim
@@ -12,11 +13,14 @@ from helpers import print_final_validation_samples
 
 # ===== Constants ======
 EPOCHS = 100
+SAVE_DIR = "modelsimple"
+os.makedirs(SAVE_DIR, exist_ok=True)
 
+MODEL_PATH = os.path.join(SAVE_DIR, "simple_tracknet.pt")
 
 # ====== Running flags ======
 PRINT_FINAL_VAL_SAMPLES = False # not working need sigma for the funciton
-
+SAVE_MODEL = True
 
 
 # ===== Picking Device ========
@@ -286,3 +290,49 @@ if PRINT_FINAL_VAL_SAMPLES:
         wrapped_angle_diff,
         num_examples=4
     )
+    
+SAVE_MODEL = False
+if SAVE_MODEL:
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "model_type": "SimpleTrackNet",
+        "input_dim": input_dim,
+        "hidden_layers": [512, 512, 128],
+        "feature_cols": FEATURE_COLS,
+        "target_cols": TARGET_COLS,
+        "x_mean": x_mean.tolist() if hasattr(x_mean, "tolist") else x_mean,
+        "x_std": x_std.tolist() if hasattr(x_std, "tolist") else x_std,
+        "y_mean": y_mean.tolist() if hasattr(y_mean, "tolist") else y_mean,
+        "y_std": y_std.tolist() if hasattr(y_std, "tolist") else y_std,
+        "use_batchnorm": False,
+        "dropout": 0.0,
+        "activation": "ReLU",
+        "seed": SEED,
+    }, MODEL_PATH)
+
+    print(f"Model saved to {MODEL_PATH}")
+    
+# ====== SAVE VALIDATION DISTRIBUTION PLOTS ======
+SAVE_PLOTS = True
+
+if SAVE_PLOTS:
+    from helpers import make_val_distribution_plots
+
+    plot_path = os.path.join("plots", "val_distributions.png")
+
+    make_val_distribution_plots(
+        model=model,
+        val_loader=val_loader,
+        device=device,
+        y_mean_t=y_mean_t,
+        y_std_t=y_std_t,
+        target_cols=TARGET_COLS,
+        phi_index=PHI_INDEX,
+        denormalize_targets=denormalize_targets,
+        save_path=plot_path,
+        bins=100,
+        density=True,
+        show=False  # set True if you want popup
+    )
+
+    print(f"Saved validation distribution plot to {plot_path}")

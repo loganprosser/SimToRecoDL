@@ -88,3 +88,5 @@ def bad_hetero_loss(y, mu, logvar):
 def actual_herto_loss(y, mu, logvar):
     logvar = torch.clamp(logvar, min=-5, max=5)
     return (logvar + (y - mu)**2 * torch.exp(-logvar)).mean()
+
+
