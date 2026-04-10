@@ -319,7 +319,7 @@ if PLOT_VAL_DISTRIBUTIONS:
         y_std_t=y_std_t,
         target_cols=TARGET_COLS,
         phi_index=PHI_INDEX,
-        output_dir="plots",
+        output_dir="plotsCODEX",
         prefix="hetero_val",
         bins=100,
         density=True,
