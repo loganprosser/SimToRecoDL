@@ -291,7 +291,7 @@ if PRINT_FINAL_VAL_SAMPLES:
         num_examples=4
     )
     
-
+SAVE_MODEL = False
 if SAVE_MODEL:
     torch.save({
         "model_state_dict": model.state_dict(),
@@ -311,3 +311,28 @@ if SAVE_MODEL:
     }, MODEL_PATH)
 
     print(f"Model saved to {MODEL_PATH}")
+    
+# ====== SAVE VALIDATION DISTRIBUTION PLOTS ======
+SAVE_PLOTS = True
+
+if SAVE_PLOTS:
+    from helpers import make_val_distribution_plots
+
+    plot_path = os.path.join("plots", "val_distributions.png")
+
+    make_val_distribution_plots(
+        model=model,
+        val_loader=val_loader,
+        device=device,
+        y_mean_t=y_mean_t,
+        y_std_t=y_std_t,
+        target_cols=TARGET_COLS,
+        phi_index=PHI_INDEX,
+        denormalize_targets=denormalize_targets,
+        save_path=plot_path,
+        bins=100,
+        density=True,
+        show=False  # set True if you want popup
+    )
+
+    print(f"Saved validation distribution plot to {plot_path}")
