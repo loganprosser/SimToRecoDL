@@ -24,9 +24,9 @@ from helpers_vis import (
 # TODO get a shit ton of data and see if we can acomplish double descent??
 
 # ====== Running Constants =======
-EPOCHS = 10000
-TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 2.0, 1.0], dtype=torch.float32)
-MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 3.0])
+EPOCHS = 2000
+TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 5.0, 1.0], dtype=torch.float32)
+MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 5.0, 1.0])
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
