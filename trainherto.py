@@ -55,13 +55,13 @@ PLOT_OVERLAP_HISTORY = True
 
 # ====== Overlap tracking settings ======
 OVERLAP_TARGET_INDEX = 3
-OVERLAP_MODEL_DIR = "maxoverlapd0"
+OVERLAP_MODEL_DIR = "2maxoverlapd0"
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = "RELgoldenmodels"
-GOLDEN_SUMMARY_FILE = "RELgoldeniteration.txt"
-PLOT_DIR = "RELplots"
-PLOT_PREFIX = "relative_loss_hetero"
+GOLDEN_MODEL_DIR = "2RELgoldenmodels"
+GOLDEN_SUMMARY_FILE = "2RELgoldeniteration.txt"
+PLOT_DIR = "2RELplots"
+PLOT_PREFIX = "2relative_loss_hetero"
 
 # ===== Picking Device ========
 device = torch.device(
