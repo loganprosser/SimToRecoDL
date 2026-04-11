@@ -9,11 +9,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
-from model import HeteroTrackNet
-from helpers import denormalize_targets, make_val_distribution_plots
-
-# TODO save models with their architecture so we can easily use them
-# like if we use batch norm dropout and if we are using what architecture
+from model import HeteroTrackNet, SimpleTrackNet, SimpleTrackNetNOBNDROP, TestTrackNet
+from helpers_vis import make_val_diagnostic_plots
 
 # ===== Defaults =====
 DEFAULT_CSV_PATH = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/filtered_particles.csv"
@@ -81,7 +78,7 @@ def build_val_loader_from_checkpoint(
     X[X == -999.0] = 0.0
 
     n = len(X)
-    val_fraction = 0.2
+    val_fraction = float(checkpoint.get("val_fraction", 0.2))
     n_val = int(n * val_fraction)
 
     rng = np.random.default_rng(seed=seed)
@@ -118,22 +115,75 @@ def build_val_loader_from_checkpoint(
 
 
 # ===== Model rebuild =====
+def activation_from_checkpoint(checkpoint):
+    activation_name = checkpoint.get("activation", "ReLU")
+    activations = {
+        "ReLU": nn.ReLU,
+        "Tanh": nn.Tanh,
+        "Sigmoid": nn.Sigmoid,
+        "GELU": nn.GELU,
+        "LeakyReLU": nn.LeakyReLU,
+    }
+
+    if activation_name not in activations:
+        raise ValueError(f"Unsupported activation in checkpoint: {activation_name}")
+
+    return activations[activation_name]
+
+
 def build_model_from_checkpoint(checkpoint, device):
-    feature_cols = checkpoint["feature_cols"]
-    #hidden_layers = checkpoint["hidden_layers"]
-    hidden_layers = [2048, 2048, 1024, 512]
+    model_type = checkpoint.get("model_type", "HeteroTrackNet")
+    feature_cols = checkpoint.get("feature_cols")
+    target_cols = checkpoint.get("target_cols", [])
 
-    input_dim = len(feature_cols)
+    if "input_dim" in checkpoint:
+        input_dim = int(checkpoint["input_dim"])
+    elif feature_cols is not None:
+        input_dim = len(feature_cols)
+    else:
+        raise KeyError("Checkpoint must include input_dim or feature_cols.")
 
-    # these match your current training script
-    model = HeteroTrackNet(
-        input_dim=input_dim,
-        hidden_layers=hidden_layers,
-        output_dim=5,
-        use_batchnorm=False,
-        dropout=0.0,
-        activation=nn.ReLU
-    )
+    output_dim = int(checkpoint.get("output_dim", len(target_cols) or 5))
+    hidden_layers = checkpoint.get("hidden_layers", [64, 64])
+    activation = activation_from_checkpoint(checkpoint)
+    is_legacy_hetero = model_type == "HeteroTrackNet" and "model_type" not in checkpoint
+
+    common_kwargs = {
+        "input_dim": input_dim,
+        "output_dim": output_dim,
+        "activation": activation,
+    }
+
+    if model_type == "HeteroTrackNet":
+        model = HeteroTrackNet(
+            hidden_layers=hidden_layers,
+            use_batchnorm=bool(checkpoint.get("use_batchnorm", True if is_legacy_hetero else False)),
+            dropout=float(checkpoint.get("dropout", 0.10 if is_legacy_hetero else 0.0)),
+            **common_kwargs,
+        )
+    elif model_type == "SimpleTrackNet":
+        model = SimpleTrackNet(
+            hidden_layers=hidden_layers,
+            use_batchnorm=bool(checkpoint.get("use_batchnorm", False)),
+            dropout=float(checkpoint.get("dropout", 0.0)),
+            **common_kwargs,
+        )
+    elif model_type == "SimpleTrackNetNOBNDROP":
+        model = SimpleTrackNetNOBNDROP(
+            input_dim=input_dim,
+            hidden_layers=hidden_layers,
+            output_dim=output_dim,
+            activation=activation,
+        )
+    elif model_type == "TestTrackNet":
+        hidden_dim = int(checkpoint.get("hidden_dim", hidden_layers[0] if hidden_layers else 64))
+        model = TestTrackNet(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            output_dim=output_dim,
+        )
+    else:
+        raise ValueError(f"Unsupported model_type in checkpoint: {model_type}")
 
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
@@ -169,12 +219,11 @@ def plot_one_model(
     y_mean_t = torch.tensor(y_mean, dtype=torch.float32, device=device)
     y_std_t = torch.tensor(y_std, dtype=torch.float32, device=device)
 
-    phi_index = target_cols.index("pca_phi")
+    phi_index = target_cols.index("pca_phi") if "pca_phi" in target_cols else None
 
     model_name = Path(model_path).stem
-    save_path = os.path.join(output_dir, f"{model_name}_val_pred_vs_true_distributions.png")
 
-    make_val_distribution_plots(
+    plot_paths = make_val_diagnostic_plots(
         model=model,
         val_loader=val_loader,
         device=device,
@@ -182,14 +231,16 @@ def plot_one_model(
         y_std_t=y_std_t,
         target_cols=target_cols,
         phi_index=phi_index,
-        denormalize_targets=denormalize_targets,
-        save_path=save_path,
+        output_dir=output_dir,
+        prefix=model_name,
         bins=bins,
         density=density,
         show=show,
     )
 
-    print(f"Saved plot to: {save_path}")
+    print("Saved plots:")
+    for plot_name, plot_path in plot_paths.items():
+        print(f"  {plot_name}: {plot_path}")
 
 
 # ===== File finding =====

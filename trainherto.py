@@ -1,38 +1,46 @@
 import os
 import torch
-from torch.utils.data import TensorDataset, DataLoader
 import torch.optim as optim
 import torch.nn as nn
 import numpy as np
-import pandas as pd
-import random
 
 from model import HeteroTrackNet
-from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi
+from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
+from helpers_data import load_track_data, print_data_shapes, set_seed
 from helpers import (
-        print_final_validation_samples,
         wrapped_angle_diff,
         denormalize_targets,
         format_epoch_report,
         save_golden_model,
+        save_model_checkpoint,
         write_final_golden_summary,
-        make_val_distribution_plots
     )
+from helpers_vis import (
+    compute_target_histogram_overlap,
+    make_training_history_plots,
+    make_val_diagnostic_plots,
+    plot_overlap_history,
+    print_final_validation_samples,
+)
 #TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent??
 
 # ====== Running Constants =======
-EPOCHS = 1000
-TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], dtype=torch.float32)
-MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 3.0])
+EPOCHS = 2000
+TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], dtype=torch.float32)
+MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
+# know that 1 is prob too high of a weighting since this loss is HUGE at small values
+LAMBDA_REL = torch.tensor([.25, .25, .25, .25, .25])
+
+
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
-#HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!!
-HIDDEN_LAYERS = [256, 256, 64]
-CRITERION = hetero_gaussian_nll_with_phi
+#HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
+HIDDEN_LAYERS = [2048, 2048, 1024, 512] 
+CRITERION = hetero_gaussian_nll_with_phi_relative # paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
@@ -41,10 +49,19 @@ TRAIN = True
 PRINT_FINAL_VAL_SAMPLES = True
 TRACK_GOLDEN = True
 PLOT_VAL_DISTRIBUTIONS = True
+PLOT_TRAINING_HISTORY = True
+TRACK_BEST_OVERLAP = True
+PLOT_OVERLAP_HISTORY = True
+
+# ====== Overlap tracking settings ======
+OVERLAP_TARGET_INDEX = 3
+OVERLAP_MODEL_DIR = "maxoverlapd0"
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = "goldenmodelsRUN3"
-GOLDEN_SUMMARY_FILE = "goldeniterationRUN3.txt"
+GOLDEN_MODEL_DIR = "RELgoldenmodels"
+GOLDEN_SUMMARY_FILE = "RELgoldeniteration.txt"
+PLOT_DIR = "RELplots"
+PLOT_PREFIX = "relative_loss_hetero"
 
 # ===== Picking Device ========
 device = torch.device(
@@ -58,126 +75,34 @@ print(f"Device set to {device}")
 # ==== Setting Seed =====
 SEED = 42
 
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(SEED)
-    torch.cuda.manual_seed_all(SEED)
-
-if torch.backends.cudnn.is_available():
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+set_seed(SEED)
 
 
-# ====== import data from the csv =======
-path = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/filtered_particles.csv"
-df = pd.read_csv(path)
+# ====== Load and prepare data =======
+data = load_track_data(batch_size=BATCH_SIZE, seed=SEED, device=device)
 
+train_loader = data.train_loader
+val_loader = data.val_loader
+X_train = data.x_train
+X_val = data.x_val
+Y_train = data.y_train
+Y_val = data.y_val
+x_mean = data.x_mean
+x_std = data.x_std
+y_mean = data.y_mean
+y_std = data.y_std
+y_mean_t = data.y_mean_t
+y_std_t = data.y_std_t
+FEATURE_COLS = data.feature_cols
+TARGET_COLS = data.target_cols
+PHI_INDEX = data.phi_index
 
-# ===== Input and Output Data =====
-TARGET_COLS = [
-    "pca_c",
-    "pca_eta",
-    "pca_phi",
-    "pca_dxy",
-    "pca_dz"
-]
-
-FEATURE_COLS = []
-
-for j in range(1, 7):
-    FEATURE_COLS += [
-        f"hit_{j}_x",
-        f"hit_{j}_y",
-        f"hit_{j}_z",
-        f"hit_{j}_r",
-        f"hit_{j}_mask"
-    ]
-
-
-# ====== PULL NUMPY ARRAYS ======
-X = df[FEATURE_COLS].to_numpy(dtype=np.float32)
-Y = df[TARGET_COLS].to_numpy(dtype=np.float32)
-
-
-# ====== REPLACE SENTINEL VALUES WITH 0 ======
-X[X == -999.0] = 0.0
-
-
-# ====== TRAIN / VAL SPLIT ======
-n = len(X)
-val_fraction = 0.2
-n_val = int(n * val_fraction)
-
-rng = np.random.default_rng(seed=SEED)
-indices = rng.permutation(n)
-
-val_idx = indices[:n_val]
-train_idx = indices[n_val:]
-
-X_train = X[train_idx]
-X_val   = X[val_idx]
-Y_train = Y[train_idx]
-Y_val   = Y[val_idx]
-
-# ==== Normalize inputs from train only ====
-x_mean = X_train.mean(axis=0)
-x_std = X_train.std(axis=0)
-
-# avoid divide-by-zero for constant columns
-x_std[x_std < 1e-8] = 1.0
-
-# normalize
-X_train = (X_train - x_mean) / x_std
-X_val   = (X_val   - x_mean) / x_std
-
-# ====== OUTPUT NORMALIZATION STATS FROM TRAIN ONLY ======
-y_mean = Y_train.mean(axis=0)
-y_std = Y_train.std(axis=0)
-
-y_std[y_std < 1e-8] = 1.0
-
-Y_train = (Y_train - y_mean) / y_std
-Y_val   = (Y_val   - y_mean) / y_std
-
-
-# ====== CONVERT TO TENSORS ======
-X_train = torch.tensor(X_train, dtype=torch.float32)
-X_val   = torch.tensor(X_val, dtype=torch.float32)
-Y_train = torch.tensor(Y_train, dtype=torch.float32)
-Y_val   = torch.tensor(Y_val, dtype=torch.float32)
-
-train_dataset = TensorDataset(X_train, Y_train)
-val_dataset = TensorDataset(X_val, Y_val)
-
-
-# ====== DataLoaders ======
-BATCH_SIZE = BATCH_SIZE
-
-g = torch.Generator()
-g.manual_seed(SEED)
-
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=g)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, generator=g)
-
-PHI_INDEX = TARGET_COLS.index("pca_phi")
-
-# store normalization stats as tensors on device for de-normalizing predictions
-y_mean_t = torch.tensor(y_mean, dtype=torch.float32, device=device)
-y_std_t = torch.tensor(y_std, dtype=torch.float32, device=device)
+if not 0 <= OVERLAP_TARGET_INDEX < len(TARGET_COLS):
+    raise ValueError(f"OVERLAP_TARGET_INDEX must be in [0, {len(TARGET_COLS) - 1}]")
 
 # ====== CHECK SHAPES ======
 if CHECK_SHAPE:
-    print("X_train shape:", X_train.shape)
-    print("X_val shape:  ", X_val.shape)
-    print("Y_train shape:", Y_train.shape)
-    print("Y_val shape:  ", Y_val.shape)
-
-    xb, yb = next(iter(train_loader))
-    print("batch X shape:", xb.shape)
-    print("batch Y shape:", yb.shape)
+    print_data_shapes(data)
 
 
 # ===== Training ======
@@ -229,7 +154,50 @@ if TEST_TRAIN:
 
 # ===== Training loop =====
 #EPOCHS = EPOCHS
-TARGET_WEIGHTS = TARGET_WEIGHTS
+training_history = {
+    "epoch": [],
+    "train_loss": [],
+    "val_loss": [],
+    "val_mean_mae": [],
+    "val_mean_rmse": [],
+    "learning_rate": [],
+}
+overlap_history = {
+    "epoch": [],
+    "overlap": [],
+    "mae": [],
+}
+
+
+def build_checkpoint_metadata(report_text=None):
+    metadata = {
+        "target_cols": TARGET_COLS,
+        "feature_cols": FEATURE_COLS,
+        "model_type": "HeteroTrackNet",
+        "input_dim": input_dim,
+        "output_dim": len(TARGET_COLS),
+        "y_mean": y_mean,
+        "y_std": y_std,
+        "x_mean": x_mean,
+        "x_std": x_std,
+        "hidden_layers": HIDDEN_LAYERS,
+        "use_batchnorm": True,
+        "dropout": 0.10,
+        "activation": "ReLU",
+        "batch_size": BATCH_SIZE,
+        "seed": SEED,
+        "val_fraction": 0.2,
+        "criterion": CRITERION.__name__,
+        "target_weights": TARGET_WEIGHTS.tolist() if TARGET_WEIGHTS is not None else None,
+        "mean_weights": MEAN_WEIGHTS.tolist() if MEAN_WEIGHTS is not None else None,
+        "overlap_target_index": OVERLAP_TARGET_INDEX,
+        "overlap_target_name": TARGET_COLS[OVERLAP_TARGET_INDEX],
+    }
+
+    if report_text is not None:
+        metadata["report_text"] = report_text
+
+    return metadata
 
 if TRAIN:
 
@@ -247,6 +215,14 @@ if TRAIN:
             best_vals[f"best_rmse_{name}"] = float("inf")
 
         best_reports = {}
+
+    if TRACK_BEST_OVERLAP:
+        os.makedirs(OVERLAP_MODEL_DIR, exist_ok=True)
+        best_overlap = {
+            "overlap": -float("inf"),
+            "mae": float("inf"),
+            "epoch": 0,
+        }
 
     for epoch in range(EPOCHS):
         model.train()
@@ -280,6 +256,8 @@ if TRAIN:
         total_val_mae = torch.zeros(len(TARGET_COLS), device=device)
         total_val_sq = torch.zeros(len(TARGET_COLS), device=device)
         total_count = 0
+        overlap_pred_parts = []
+        overlap_true_parts = []
 
         with torch.no_grad():
             for xb, yb in val_loader:
@@ -311,6 +289,9 @@ if TRAIN:
                 total_val_sq += (diff ** 2).sum(dim=0)
                 total_count += xb.size(0)
 
+                overlap_pred_parts.append(mu_phys.detach().cpu())
+                overlap_true_parts.append(yb_phys.detach().cpu())
+
         val_loss /= len(val_loader.dataset)
 
         per_target_mae = (total_val_mae / total_count).detach().cpu().numpy()
@@ -318,6 +299,37 @@ if TRAIN:
 
         overall_val_mae = per_target_mae.mean()
         overall_val_rmse = per_target_rmse.mean()
+        current_lr = optimizer.param_groups[0]["lr"]
+        overlap_pred = torch.cat(overlap_pred_parts, dim=0).numpy()
+        overlap_true = torch.cat(overlap_true_parts, dim=0).numpy()
+        if OVERLAP_TARGET_INDEX == PHI_INDEX:
+            overlap_pred[:, PHI_INDEX] = np.arctan2(
+                np.sin(overlap_pred[:, PHI_INDEX]),
+                np.cos(overlap_pred[:, PHI_INDEX])
+            )
+            overlap_true[:, PHI_INDEX] = np.arctan2(
+                np.sin(overlap_true[:, PHI_INDEX]),
+                np.cos(overlap_true[:, PHI_INDEX])
+            )
+        target_overlap = compute_target_histogram_overlap(
+            y_true=overlap_true,
+            y_pred=overlap_pred,
+            target_index=OVERLAP_TARGET_INDEX,
+            target_cols=TARGET_COLS,
+            bins=100,
+        )
+        target_mae = float(per_target_mae[OVERLAP_TARGET_INDEX])
+
+        training_history["epoch"].append(epoch + 1)
+        training_history["train_loss"].append(train_loss)
+        training_history["val_loss"].append(val_loss)
+        training_history["val_mean_mae"].append(overall_val_mae)
+        training_history["val_mean_rmse"].append(overall_val_rmse)
+        training_history["learning_rate"].append(current_lr)
+
+        overlap_history["epoch"].append(epoch + 1)
+        overlap_history["overlap"].append(target_overlap)
+        overlap_history["mae"].append(target_mae)
 
         # ===== build report string =====
         report = format_epoch_report(
@@ -332,7 +344,13 @@ if TRAIN:
             TARGET_COLS
         )
 
+        overlap_report = (
+            f"   Overlap {TARGET_COLS[OVERLAP_TARGET_INDEX]}: "
+            f"{target_overlap:.6f} | MAE: {target_mae:.6f}"
+        )
+
         print(report)
+        print(overlap_report)
 
         # ===== GOLDEN TRACKING =====
         if TRACK_GOLDEN:
@@ -347,18 +365,7 @@ if TRAIN:
                     epoch,
                     report,
                     GOLDEN_MODEL_DIR,
-                    {
-                        "target_cols": TARGET_COLS,
-                        "feature_cols": FEATURE_COLS,
-                        "y_mean": y_mean,
-                        "y_std": y_std,
-                        "x_mean": x_mean,
-                        "x_std": x_std,
-                        "hidden_layers": HIDDEN_LAYERS,
-                        "batch_size": BATCH_SIZE,
-                        "seed": SEED,
-                        "report_text": report,
-                    }
+                    build_checkpoint_metadata(report_text=report)
                 )
                 best_reports[name] = report
 
@@ -385,23 +392,130 @@ if TRAIN:
                     best_vals[f"best_rmse_{name}"] = per_target_rmse[i]
                     save(f"best_rmse_{name}", per_target_rmse[i])
 
+        if TRACK_BEST_OVERLAP:
+            overlap_improved = (
+                target_overlap > best_overlap["overlap"]
+                or (
+                    target_overlap == best_overlap["overlap"]
+                    and target_mae < best_overlap["mae"]
+                )
+            )
+
+            if overlap_improved:
+                best_overlap["overlap"] = target_overlap
+                best_overlap["mae"] = target_mae
+                best_overlap["epoch"] = epoch + 1
+
+                overlap_target_name = TARGET_COLS[OVERLAP_TARGET_INDEX]
+                overlap_tag = f"best_overlap_{overlap_target_name}"
+                overlap_model_path = os.path.join(OVERLAP_MODEL_DIR, f"{overlap_tag}.pt")
+                overlap_report_path = os.path.join(PLOT_DIR, f"{overlap_tag}_training_report.txt")
+
+                metadata = build_checkpoint_metadata(report_text=f"{report}\n{overlap_report}")
+                metadata.update(
+                    {
+                        "metric_tag": overlap_tag,
+                        "metric_value": float(target_overlap),
+                        "overlap": float(target_overlap),
+                        "overlap_mae": float(target_mae),
+                    }
+                )
+
+                save_model_checkpoint(
+                    save_path=overlap_model_path,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch + 1,
+                    metadata=metadata,
+                )
+
+                overlap_plot_paths = make_val_diagnostic_plots(
+                    model=model,
+                    val_loader=val_loader,
+                    device=device,
+                    y_mean_t=y_mean_t,
+                    y_std_t=y_std_t,
+                    target_cols=TARGET_COLS,
+                    phi_index=PHI_INDEX,
+                    output_dir=PLOT_DIR,
+                    prefix=overlap_tag,
+                    bins=100,
+                    density=True,
+                    show=False,
+                )
+
+                os.makedirs(PLOT_DIR, exist_ok=True)
+                with open(overlap_report_path, "w") as f:
+                    f.write("BEST OVERLAP TRAINING REPORT\n")
+                    f.write("=" * 80 + "\n")
+                    f.write(f"target_index: {OVERLAP_TARGET_INDEX}\n")
+                    f.write(f"target_name: {overlap_target_name}\n")
+                    f.write(f"epoch: {epoch + 1}\n")
+                    f.write(f"overlap: {target_overlap:.6f}\n")
+                    f.write(f"mae: {target_mae:.6f}\n")
+                    f.write("\n")
+                    f.write(report)
+                    f.write("\n")
+                    f.write(overlap_report)
+                    f.write("\n")
+
+                print(
+                    f"   New best overlap model for {overlap_target_name}: "
+                    f"{target_overlap:.6f} at epoch {epoch + 1}"
+                )
+                print(f"   Saved overlap model: {overlap_model_path}")
+                print(f"   Saved overlap report: {overlap_report_path}")
+                print("   Saved best overlap plots:")
+                for plot_name, plot_path in overlap_plot_paths.items():
+                    print(f"      {plot_name}: {plot_path}")
+
         scheduler.step()
 
     # ===== write FINAL summary ONLY ONCE =====
     if TRACK_GOLDEN:
         write_final_golden_summary(GOLDEN_SUMMARY_FILE, best_reports, best_vals)
-                
+
 if PRINT_FINAL_VAL_SAMPLES:
     print_final_validation_samples(
         model, val_loader, device,
-        denormalize_targets, y_mean_t, y_std_t,
+        y_mean_t, y_std_t,
         TARGET_COLS, PHI_INDEX,
-        wrapped_angle_diff,
-        num_examples=4
+        num_examples=5
     )
-    
+
+if PLOT_TRAINING_HISTORY:
+    history_plot_paths = make_training_history_plots(
+        history=training_history,
+        output_dir=PLOT_DIR,
+        prefix=PLOT_PREFIX,
+        show=False,
+    )
+    if history_plot_paths:
+        print("========== Saved training history plots: ==========")
+        for plot_name, plot_path in history_plot_paths.items():
+            print(f"  {plot_name}: {plot_path}")
+
+if PLOT_OVERLAP_HISTORY:
+    if overlap_history["epoch"]:
+        overlap_target_name = TARGET_COLS[OVERLAP_TARGET_INDEX]
+        overlap_history_path = os.path.join(
+            PLOT_DIR,
+            f"{PLOT_PREFIX}_overlap_{overlap_target_name}_over_time.png"
+        )
+        plot_overlap_history(
+            history=overlap_history,
+            target_name=overlap_target_name,
+            save_path=overlap_history_path,
+            show=False,
+        )
+        print("========== Saved overlap history plot: ==========")
+        print(f"  overlap_history: {overlap_history_path}")
+    else:
+        print("Skipping overlap history plot because no epochs were recorded.")
+            
 if PLOT_VAL_DISTRIBUTIONS:
-    make_val_distribution_plots(
+    plot_paths = make_val_diagnostic_plots(
         model=model,
         val_loader=val_loader,
         device=device,
@@ -409,9 +523,12 @@ if PLOT_VAL_DISTRIBUTIONS:
         y_std_t=y_std_t,
         target_cols=TARGET_COLS,
         phi_index=PHI_INDEX,
-        denormalize_targets=denormalize_targets,
-        save_path="plots/val_pred_vs_true_distributions.png",
+        output_dir=PLOT_DIR,
+        prefix=PLOT_PREFIX,
         bins=100,
         density=True,
         show=True
     )
+    print("========== Saved validation diagnostic plots: ==========")
+    for plot_name, plot_path in plot_paths.items():
+        print(f"  {plot_name}: {plot_path}")
