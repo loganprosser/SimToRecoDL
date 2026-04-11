@@ -64,6 +64,14 @@ PLOT_DIR = "2RELplots"
 PLOT_PREFIX = "2relative_loss_hetero"
 
 # ===== Picking Device ========
+'''
+If you want to pick a specified GPU (lnx4555 has two) set env variable
+in shell you are executing in either:
+CUDA_VISIBLE_DEVICES=0 python train.py (lnx4555: [NVIDIA L40] 46gb)
+or
+CUDA_VISIBLE_DEVICES=1 python train.py (lnx4555: [NVIDIA L4] 24gb)
+'''
+
 device = torch.device(
     "mps" if torch.backends.mps.is_available()
     else "cuda" if torch.cuda.is_available()
