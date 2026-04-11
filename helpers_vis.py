@@ -21,6 +21,9 @@ def predict_mu_and_logvar(model, xb):
 
 
 def wrap_phi_column(values, phi_index):
+    if phi_index is None:
+        return values
+
     values = values.clone()
     values[:, phi_index] = torch.atan2(
         torch.sin(values[:, phi_index]),
@@ -57,10 +60,11 @@ def print_final_validation_samples(
             yb_phys = denormalize_targets(yb, y_mean_t, y_std_t)
 
             err = pred_phys - yb_phys
-            err[:, phi_index] = wrapped_angle_diff(
-                pred_phys[:, phi_index],
-                yb_phys[:, phi_index]
-            )
+            if phi_index is not None:
+                err[:, phi_index] = wrapped_angle_diff(
+                    pred_phys[:, phi_index],
+                    yb_phys[:, phi_index]
+                )
 
             std_phys = None
             if logvar is not None:
@@ -156,10 +160,11 @@ def collect_val_predictions_targets_and_sigma(
 
 def phi_wrapped_residuals(y_pred, y_true, phi_index):
     residuals = y_pred - y_true
-    residuals[:, phi_index] = np.arctan2(
-        np.sin(residuals[:, phi_index]),
-        np.cos(residuals[:, phi_index])
-    )
+    if phi_index is not None:
+        residuals[:, phi_index] = np.arctan2(
+            np.sin(residuals[:, phi_index]),
+            np.cos(residuals[:, phi_index])
+        )
     return residuals
 
 
@@ -172,9 +177,9 @@ def get_overlap_plot_range(y_true, y_pred, target_index, target_name=None, axis_
     vmin = min(true_vals.min(), pred_vals.min())
     vmax = max(true_vals.max(), pred_vals.max())
 
-    if target_index == 0:
+    if target_name == "pca_c":
         vmin, vmax = -0.1, 0.1
-    elif target_index == 3:
+    elif target_name == "pca_dxy":
         vmin, vmax = -0.005, 0.005
 
     if target_name in axis_limits:
@@ -309,7 +314,7 @@ def plot_pred_vs_true_scatter(
             vmin -= 0.5
             vmax += 0.5
             
-        if i == 3:
+        if name == "pca_dxy":
             vmin, vmax = -0.005, 0.005
             ax.set_xlim(vmin, vmax)
             ax.set_ylim(vmin, vmax)
@@ -371,7 +376,7 @@ def plot_pull_distributions(
         ax.axvline(-1.0, color="gray", linewidth=1.0, linestyle="--")
         ax.axvline(1.0, color="gray", linewidth=1.0, linestyle="--")
         
-        if i == 3:
+        if name == "pca_dxy":
             ax.set_xlim(-100, 100)
             # optional: match y scaling too
             # ax.set_ylim(0, some_value)

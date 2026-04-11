@@ -219,7 +219,7 @@ def plot_one_model(
     y_mean_t = torch.tensor(y_mean, dtype=torch.float32, device=device)
     y_std_t = torch.tensor(y_std, dtype=torch.float32, device=device)
 
-    phi_index = target_cols.index("pca_phi")
+    phi_index = target_cols.index("pca_phi") if "pca_phi" in target_cols else None
 
     model_name = Path(model_path).stem
 

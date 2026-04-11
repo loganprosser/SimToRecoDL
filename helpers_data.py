@@ -1,6 +1,6 @@
 import random
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ class TrackDataBundle:
     y_std_t: torch.Tensor
     feature_cols: List[str]
     target_cols: List[str]
-    phi_index: int
+    phi_index: Optional[int]
 
     @property
     def input_dim(self):
@@ -85,7 +85,7 @@ def load_track_data(
 
     target_cols = list(target_cols or DEFAULT_TARGET_COLS)
     feature_cols = list(feature_cols or build_hit_feature_cols(n_layers))
-    phi_index = target_cols.index("pca_phi")
+    phi_index = target_cols.index("pca_phi") if "pca_phi" in target_cols else None
 
     df = pd.read_csv(csv_path)
     x = df[feature_cols].to_numpy(dtype=np.float32)
