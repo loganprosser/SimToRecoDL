@@ -27,7 +27,7 @@ from helpers_vis import (
 # TODO get a shit ton of data and see if we can acomplish double descent??
 
 # ====== Running Constants =======
-EPOCHS = 2000
+EPOCHS = 750
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 2.0, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
