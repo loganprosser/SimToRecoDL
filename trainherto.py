@@ -55,15 +55,15 @@ PLOT_OVERLAP_HISTORY = True
 
 # ====== Overlap tracking settings ======
 OVERLAP_TARGET_INDEX = 3
-OVERLAP_MODEL_DIR = "3maxoverlapd0"
+OVERLAP_MODEL_DIR = "TESTmaxoverlapd0"
 
 #1: [5x .25] 2: [5x 1.0] 3: [0,0,0,.5,.1]
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = "3RELgoldenmodels"
-GOLDEN_SUMMARY_FILE = "3RELgoldeniteration.txt"
-PLOT_DIR = "3RELplots"
-PLOT_PREFIX = "3relative_loss_hetero"
+GOLDEN_MODEL_DIR = "TESTRELgoldenmodels"
+GOLDEN_SUMMARY_FILE = "TESTRELgoldeniteration.txt"
+PLOT_DIR = "TESTRELplots"
+PLOT_PREFIX = "TESTrelative_loss_hetero"
 
 # ===== Picking Device ========
 '''
