@@ -28,10 +28,10 @@ from helpers_vis import (
 
 # ====== Running Constants =======
 EPOCHS = 750
-TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 2.0, 1.0], dtype=torch.float32)
+TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 100, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
-LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 5, 0])
+LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 50, 0])
 
 
 
@@ -39,7 +39,7 @@ LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 5, 0])
 
 BATCH_SIZE = 256
 #HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
-HIDDEN_LAYERS = [2048, 2048, 1024, 512] 
+HIDDEN_LAYERS = [512, 512, 256] #maybe add residuals
 CRITERION = hetero_gaussian_nll_with_phi_relative # paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
 
 # ====== Running Flags =======

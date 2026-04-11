@@ -29,8 +29,6 @@ Save report and CSVs without a heatmap:
     
 """
 
-
-
 DEFAULT_OUTPUT_DIR = "correlation_checks"
 
 
