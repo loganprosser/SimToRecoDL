@@ -1,144 +1,234 @@
+import argparse
+import os
+
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
 
-DEFAULT_DATA_PATH = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/filtered_particles.csv"
+from helpers_data import DEFAULT_DATA_PATH, DEFAULT_TARGET_COLS, build_hit_feature_cols
 
-def build_hit_feature_cols(n_layers=6):
-    feature_cols = []
-    for j in range(1, n_layers + 1):
-        feature_cols += [
-            f"hit_{j}_x",
-            f"hit_{j}_y",
-            f"hit_{j}_z",
-            f"hit_{j}_r",
-            f"hit_{j}_mask",
-        ]
-    return feature_cols
 
-def safe_corr(a, b):
-    a = np.asarray(a, dtype=np.float64)
-    b = np.asarray(b, dtype=np.float64)
+"""
+How to run:
 
-    if np.std(a) < 1e-12 or np.std(b) < 1e-12:
+Quick terminal-only sanity check:
+    python3 SimToRecoDL/correlationcheck.py
+
+Check only the solo pca_dxy target:
+    python3 SimToRecoDL/correlationcheck.py --target-mode solo
+
+Use Spearman rank correlation instead of Pearson:
+    python3 SimToRecoDL/correlationcheck.py --method spearman
+
+Save report, CSVs, and heatmap:
+    python3 SimToRecoDL/correlationcheck.py --save
+
+Save report and CSVs without a heatmap:
+    python3 SimToRecoDL/correlationcheck.py --save --no-heatmap
+"""
+
+
+DEFAULT_OUTPUT_DIR = "correlation_checks"
+
+
+def get_default_target_cols(target_mode):
+    if target_mode == "solo":
+        return ["pca_dxy"]
+    return DEFAULT_TARGET_COLS
+
+
+def safe_corr(x, y):
+    valid = np.isfinite(x) & np.isfinite(y)
+    if valid.sum() < 2:
         return np.nan
-    return np.corrcoef(a, b)[0, 1]
+
+    x = x[valid]
+    y = y[valid]
+
+    if np.std(x) < 1e-12 or np.std(y) < 1e-12:
+        return np.nan
+
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def compute_feature_target_corr(df, feature_cols, target_cols, method):
+    cols = feature_cols + target_cols
+    if method in ("pearson", "spearman"):
+        corr = df[cols].corr(method=method)
+        return corr.loc[feature_cols, target_cols]
+
+    rows = {}
+    for feature in feature_cols:
+        rows[feature] = {}
+        for target in target_cols:
+            rows[feature][target] = safe_corr(
+                df[feature].to_numpy(dtype=np.float64),
+                df[target].to_numpy(dtype=np.float64),
+            )
+    return pd.DataFrame.from_dict(rows, orient="index")[target_cols]
+
+
+def summarize_top_correlations(corr, top_n):
+    lines = []
+    for target in corr.columns:
+        ranked = corr[target].dropna().reindex(
+            corr[target].dropna().abs().sort_values(ascending=False).index
+        )
+
+        lines.append(f"\nTop {top_n} absolute correlations for {target}:")
+        if ranked.empty:
+            lines.append("  No finite correlations found.")
+            continue
+
+        for feature, value in ranked.head(top_n).items():
+            lines.append(f"  {feature:16s} corr = {value: .6f} | abs = {abs(value): .6f}")
+
+    return "\n".join(lines)
+
+
+def summarize_feature_groups(corr):
+    feature_groups = {
+        "x": [idx for idx in corr.index if idx.endswith("_x")],
+        "y": [idx for idx in corr.index if idx.endswith("_y")],
+        "z": [idx for idx in corr.index if idx.endswith("_z")],
+        "r": [idx for idx in corr.index if idx.endswith("_r")],
+        "mask": [idx for idx in corr.index if idx.endswith("_mask")],
+    }
+
+    rows = []
+    for group_name, features in feature_groups.items():
+        if not features:
+            continue
+        group_corr = corr.loc[features].abs()
+        row = {"feature_group": group_name}
+        for target in corr.columns:
+            row[target] = group_corr[target].mean()
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def build_report_text(corr, group_summary, method, csv_path, top_n):
+    lines = [
+        "FEATURE/TARGET CORRELATION CHECK",
+        "=" * 80,
+        f"csv_path: {csv_path}",
+        f"method: {method}",
+        f"n_features: {len(corr.index)}",
+        f"n_targets: {len(corr.columns)}",
+        "",
+        "Interpretation:",
+        "  Large absolute values suggest a simple linear/rank relationship.",
+        "  Small values do not prove the target is unlearnable; nonlinear networks can use",
+        "  feature combinations that pairwise correlation does not see.",
+        summarize_top_correlations(corr, top_n),
+        "",
+        "Mean absolute correlation by feature group:",
+    ]
+
+    if group_summary.empty:
+        lines.append("  No grouped correlations found.")
+    else:
+        lines.append(group_summary.to_string(index=False, float_format=lambda x: f"{x:.6f}"))
+
+    return "\n".join(lines)
+
+
+def write_report(path, corr, group_summary, method, csv_path, top_n):
+    report_text = build_report_text(corr, group_summary, method, csv_path, top_n)
+
+    with open(path, "w") as f:
+        f.write(report_text)
+        f.write("\n")
+
+
+def make_heatmap(corr, save_path):
+    import matplotlib.pyplot as plt
+
+    fig_width = max(8, len(corr.columns) * 2.0)
+    fig_height = max(8, len(corr.index) * 0.28)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    im = ax.imshow(corr.to_numpy(dtype=np.float64), aspect="auto", cmap="coolwarm", vmin=-1, vmax=1)
+    ax.set_xticks(np.arange(len(corr.columns)))
+    ax.set_xticklabels(corr.columns, rotation=45, ha="right")
+    ax.set_yticks(np.arange(len(corr.index)))
+    ax.set_yticklabels(corr.index)
+    ax.set_title("Feature vs target correlation")
+    fig.colorbar(im, ax=ax, label="Correlation")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Check pairwise correlations between track hit inputs and target outputs."
+    )
+    parser.add_argument("--csv-path", default=DEFAULT_DATA_PATH, help="Path to filtered_particles.csv")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for reports/CSVs/plots")
+    parser.add_argument("--method", default="pearson", choices=["pearson", "spearman", "manual_pearson"])
+    parser.add_argument("--target-mode", default="full", choices=["full", "solo"])
+    parser.add_argument("--top-n", type=int, default=12)
+    parser.add_argument("--save", action="store_true", help="Save report, CSVs, and heatmap to output-dir")
+    parser.add_argument("--no-heatmap", action="store_true", help="Skip heatmap png generation when --save is on")
+    return parser.parse_args()
+
 
 def main():
-    csv_path = DEFAULT_DATA_PATH
-    n_layers = 6
-    sentinel_value = -999.0
-    sentinel_replacement = 0.0
-    target_col = "pca_dxy"
+    args = parse_args()
 
-    feature_cols = build_hit_feature_cols(n_layers)
+    feature_cols = build_hit_feature_cols(n_layers=6)
+    target_cols = get_default_target_cols(args.target_mode)
 
-    print(f"Loading CSV: {csv_path}")
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(args.csv_path)
+    df = df[feature_cols + target_cols].copy()
+    df[feature_cols] = df[feature_cols].replace(-999.0, 0.0)
 
-    needed_cols = feature_cols + [target_col]
-    missing = [c for c in needed_cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing columns in CSV: {missing}")
+    corr = compute_feature_target_corr(df, feature_cols, target_cols, args.method)
+    abs_corr = corr.abs()
+    group_summary = summarize_feature_groups(corr)
 
-    # raw features and target
-    X = df[feature_cols].copy()
-    y = df[target_col].to_numpy(dtype=np.float64)
-
-    # replace sentinel values
-    X = X.replace(sentinel_value, sentinel_replacement)
-
-    print("\n===== RAW pca_dxy stats =====")
-    print(f"count : {len(y)}")
-    print(f"mean  : {np.mean(y):.10f}")
-    print(f"std   : {np.std(y):.10f}")
-    print(f"min   : {np.min(y):.10f}")
-    print(f"max   : {np.max(y):.10f}")
-    print(f"mean(|y|): {np.mean(np.abs(y)):.10f}")
-    print(f"median(|y|): {np.median(np.abs(y)):.10f}")
-
-    near_zero_thresholds = [1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
-    print("\n===== Fraction near zero =====")
-    for thr in near_zero_thresholds:
-        frac = np.mean(np.abs(y) < thr)
-        print(f"|pca_dxy| < {thr:.0e}: {frac:.6f}")
-
-    print("\n===== Per-feature correlation with raw pca_dxy =====")
-    corr_rows = []
-    abs_y = np.abs(y)
-
-    for col in feature_cols:
-        x_col = X[col].to_numpy(dtype=np.float64)
-        corr_y = safe_corr(x_col, y)
-        corr_abs_y = safe_corr(x_col, abs_y)
-        corr_rows.append((col, corr_y, abs(corr_y) if not np.isnan(corr_y) else np.nan, corr_abs_y))
-
-    corr_df = pd.DataFrame(
-        corr_rows,
-        columns=["feature", "corr_with_dxy", "abs_corr_with_dxy", "corr_with_abs_dxy"]
+    report_text = build_report_text(
+        corr=corr,
+        group_summary=group_summary,
+        method=args.method,
+        csv_path=args.csv_path,
+        top_n=args.top_n,
     )
 
-    corr_df_sorted = corr_df.sort_values("abs_corr_with_dxy", ascending=False)
+    print(report_text)
 
-    print("\nTop 20 by |corr(feature, pca_dxy)|")
-    print(corr_df_sorted.head(20).to_string(index=False))
+    if not args.save:
+        print("\nNot saving files. Re-run with --save to write CSVs, report, and heatmap.")
+        return
 
-    abs_corr_absy_df = corr_df.copy()
-    abs_corr_absy_df["abs_corr_with_abs_dxy"] = abs_corr_absy_df["corr_with_abs_dxy"].abs()
-    abs_corr_absy_df = abs_corr_absy_df.sort_values("abs_corr_with_abs_dxy", ascending=False)
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    print("\nTop 20 by |corr(feature, abs(pca_dxy))|")
-    print(abs_corr_absy_df[["feature", "corr_with_abs_dxy", "abs_corr_with_abs_dxy"]].head(20).to_string(index=False))
+    prefix = f"{args.target_mode}_{args.method}"
+    corr_path = os.path.join(args.output_dir, f"{prefix}_feature_target_correlation.csv")
+    abs_corr_path = os.path.join(args.output_dir, f"{prefix}_feature_target_abs_correlation.csv")
+    group_path = os.path.join(args.output_dir, f"{prefix}_feature_group_abs_correlation.csv")
+    report_path = os.path.join(args.output_dir, f"{prefix}_correlation_report.txt")
+    heatmap_path = os.path.join(args.output_dir, f"{prefix}_feature_target_correlation_heatmap.png")
 
-    print("\n===== Simple linear baseline for learnability =====")
-    X_np = X.to_numpy(dtype=np.float64)
+    corr.to_csv(corr_path)
+    abs_corr.to_csv(abs_corr_path)
+    group_summary.to_csv(group_path, index=False)
+    write_report(report_path, corr, group_summary, args.method, args.csv_path, args.top_n)
 
-    n = len(X_np)
-    rng = np.random.default_rng(42)
-    idx = rng.permutation(n)
-    n_val = int(0.2 * n)
+    if not args.no_heatmap:
+        make_heatmap(corr, heatmap_path)
 
-    val_idx = idx[:n_val]
-    train_idx = idx[n_val:]
+    print("Saved correlation check outputs:")
+    print(f"  report: {report_path}")
+    print(f"  correlation csv: {corr_path}")
+    print(f"  abs correlation csv: {abs_corr_path}")
+    print(f"  group summary csv: {group_path}")
+    if not args.no_heatmap:
+        print(f"  heatmap: {heatmap_path}")
 
-    X_train = X_np[train_idx]
-    X_val = X_np[val_idx]
-    y_train = y[train_idx]
-    y_val = y[val_idx]
-
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-
-    y_pred_train = model.predict(X_train)
-    y_pred_val = model.predict(X_val)
-
-    train_r2 = r2_score(y_train, y_pred_train)
-    val_r2 = r2_score(y_val, y_pred_val)
-
-    baseline_zero_pred = np.zeros_like(y_val)
-    ss_res_zero = np.sum((y_val - baseline_zero_pred) ** 2)
-    ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
-    zero_r2 = 1.0 - ss_res_zero / ss_tot if ss_tot > 0 else np.nan
-
-    print(f"LinearRegression train R^2: {train_r2:.6f}")
-    print(f"LinearRegression val   R^2: {val_r2:.6f}")
-    print(f'Zero-predictor val R^2     : {zero_r2:.6f}')
-
-    coef_df = pd.DataFrame({
-        "feature": feature_cols,
-        "coef": model.coef_,
-        "abs_coef": np.abs(model.coef_),
-    }).sort_values("abs_coef", ascending=False)
-
-    print("\nTop 20 linear-model coefficients by magnitude")
-    print(coef_df.head(20).to_string(index=False))
-
-    print("\n===== Quick interpretation guide =====")
-    print("1. If almost all |corr| values are tiny, the inputs may not contain much direct signal for pca_dxy.")
-    print("2. If linear val R^2 is near 0 or negative, a simple model cannot learn much from these features.")
-    print("3. That does NOT prove a neural net cannot learn anything, but it does mean the mapping is weak or nonlinear.")
-    print("4. If val R^2 is meaningfully positive, there is signal and the issue is more likely training setup / target handling / architecture.")
 
 if __name__ == "__main__":
     main()
