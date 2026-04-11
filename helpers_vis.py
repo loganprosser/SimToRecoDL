@@ -376,10 +376,10 @@ def plot_pull_distributions(
         ax.axvline(-1.0, color="gray", linewidth=1.0, linestyle="--")
         ax.axvline(1.0, color="gray", linewidth=1.0, linestyle="--")
         
-        if name == "pca_dxy":
-            ax.set_xlim(-100, 100)
-            # optional: match y scaling too
-            # ax.set_ylim(0, some_value)
+        # if name == "pca_dxy":
+        #     ax.set_xlim(-100, 100)
+        #     # optional: match y scaling too
+        #     # ax.set_ylim(0, some_value)
         
         ax.set_title(f"{name} pull")
         ax.set_xlabel("(pred - actual) / sigma")
