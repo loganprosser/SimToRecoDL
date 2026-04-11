@@ -163,6 +163,60 @@ def phi_wrapped_residuals(y_pred, y_true, phi_index):
     return residuals
 
 
+def get_overlap_plot_range(y_true, y_pred, target_index, target_name=None, axis_limits=None):
+    axis_limits = axis_limits or {}
+
+    true_vals = y_true[:, target_index]
+    pred_vals = y_pred[:, target_index]
+
+    vmin = min(true_vals.min(), pred_vals.min())
+    vmax = max(true_vals.max(), pred_vals.max())
+
+    if target_index == 0:
+        vmin, vmax = -0.1, 0.1
+    elif target_index == 3:
+        vmin, vmax = -0.005, 0.005
+
+    if target_name in axis_limits:
+        vmin, vmax = axis_limits[target_name]
+
+    if vmin == vmax:
+        vmin -= 0.5
+        vmax += 0.5
+
+    return vmin, vmax
+
+
+def compute_target_histogram_overlap(
+    y_true,
+    y_pred,
+    target_index,
+    target_cols,
+    bins=100,
+    axis_limits=None,
+):
+    target_name = target_cols[target_index]
+    vmin, vmax = get_overlap_plot_range(
+        y_true=y_true,
+        y_pred=y_pred,
+        target_index=target_index,
+        target_name=target_name,
+        axis_limits=axis_limits,
+    )
+    bin_edges = np.linspace(vmin, vmax, bins + 1)
+
+    true_hist, _ = np.histogram(y_true[:, target_index], bins=bin_edges, density=True)
+    pred_hist, _ = np.histogram(y_pred[:, target_index], bins=bin_edges, density=True)
+
+    true_hist = np.nan_to_num(true_hist, nan=0.0, posinf=0.0, neginf=0.0)
+    pred_hist = np.nan_to_num(pred_hist, nan=0.0, posinf=0.0, neginf=0.0)
+
+    bin_widths = np.diff(bin_edges)
+    overlap = np.sum(np.minimum(true_hist, pred_hist) * bin_widths)
+
+    return float(overlap)
+
+
 def plot_overlap_distributions(
     y_true,
     y_pred,
@@ -187,22 +241,13 @@ def plot_overlap_distributions(
         true_vals = y_true[:, i]
         pred_vals = y_pred[:, i]
 
-        vmin = min(true_vals.min(), pred_vals.min())
-        vmax = max(true_vals.max(), pred_vals.max())
-        
-        if i == 0:
-            vmin, vmax = -.1,.1
-        
-        elif i == 3:
-            vmin, vmax = -.005, .005
-        
-
-        if name in axis_limits:
-            vmin, vmax = axis_limits[name]
-
-        if vmin == vmax:
-            vmin -= 0.5
-            vmax += 0.5
+        vmin, vmax = get_overlap_plot_range(
+            y_true=y_true,
+            y_pred=y_pred,
+            target_index=i,
+            target_name=name,
+            axis_limits=axis_limits,
+        )
 
         bin_edges = np.linspace(vmin, vmax, bins + 1)
 
@@ -319,15 +364,18 @@ def plot_pull_distributions(
         ax = axes[i]
         vals = pulls[:, i]
         finite_vals = vals[np.isfinite(vals)]
-        
-        # if i == 3:
-        #     finite_vals = np.clip(finite_vals, -5, 5)  # example bounds
-        #     ax.set_xlim(-5, 5)
+
 
         ax.hist(finite_vals, bins=bins, alpha=0.75, density=density)
         ax.axvline(0.0, color="black", linewidth=1.0)
         ax.axvline(-1.0, color="gray", linewidth=1.0, linestyle="--")
         ax.axvline(1.0, color="gray", linewidth=1.0, linestyle="--")
+        
+        if i == 3:
+            ax.set_xlim(-300, 300)
+            # optional: match y scaling too
+            # ax.set_ylim(0, some_value)
+        
         ax.set_title(f"{name} pull")
         ax.set_xlabel("(pred - actual) / sigma")
         ax.set_ylabel("Density" if density else "Count")
@@ -611,3 +659,38 @@ def make_training_history_plots(
     )
 
     return paths
+
+
+def plot_overlap_history(
+    history,
+    target_name,
+    save_path=None,
+    show=True,
+):
+    epochs = history["epoch"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    axes[0].plot(epochs, history["overlap"], label="Histogram overlap")
+    axes[0].set_title(f"{target_name} overlap over time")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Overlap")
+    axes[0].set_ylim(0.0, 1.05)
+    axes[0].legend()
+
+    axes[1].plot(epochs, history["mae"], label="MAE")
+    axes[1].set_title(f"{target_name} MAE over time")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("MAE")
+    axes[1].legend()
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)

@@ -12,11 +12,14 @@ from helpers import (
         denormalize_targets,
         format_epoch_report,
         save_golden_model,
+        save_model_checkpoint,
         write_final_golden_summary,
     )
 from helpers_vis import (
+    compute_target_histogram_overlap,
     make_training_history_plots,
     make_val_diagnostic_plots,
+    plot_overlap_history,
     print_final_validation_samples,
 )
 #TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
@@ -43,6 +46,12 @@ PRINT_FINAL_VAL_SAMPLES = True
 TRACK_GOLDEN = True
 PLOT_VAL_DISTRIBUTIONS = True
 PLOT_TRAINING_HISTORY = True
+TRACK_BEST_OVERLAP = True
+PLOT_OVERLAP_HISTORY = True
+
+# ====== Overlap tracking settings ======
+OVERLAP_TARGET_INDEX = 3
+OVERLAP_MODEL_DIR = "maxoverlapd0"
 
 # ====== Golden model settings ======
 GOLDEN_MODEL_DIR = "goldenmodelsRUN3"
@@ -83,6 +92,9 @@ y_std_t = data.y_std_t
 FEATURE_COLS = data.feature_cols
 TARGET_COLS = data.target_cols
 PHI_INDEX = data.phi_index
+
+if not 0 <= OVERLAP_TARGET_INDEX < len(TARGET_COLS):
+    raise ValueError(f"OVERLAP_TARGET_INDEX must be in [0, {len(TARGET_COLS) - 1}]")
 
 # ====== CHECK SHAPES ======
 if CHECK_SHAPE:
@@ -146,6 +158,42 @@ training_history = {
     "val_mean_rmse": [],
     "learning_rate": [],
 }
+overlap_history = {
+    "epoch": [],
+    "overlap": [],
+    "mae": [],
+}
+
+
+def build_checkpoint_metadata(report_text=None):
+    metadata = {
+        "target_cols": TARGET_COLS,
+        "feature_cols": FEATURE_COLS,
+        "model_type": "HeteroTrackNet",
+        "input_dim": input_dim,
+        "output_dim": len(TARGET_COLS),
+        "y_mean": y_mean,
+        "y_std": y_std,
+        "x_mean": x_mean,
+        "x_std": x_std,
+        "hidden_layers": HIDDEN_LAYERS,
+        "use_batchnorm": True,
+        "dropout": 0.10,
+        "activation": "ReLU",
+        "batch_size": BATCH_SIZE,
+        "seed": SEED,
+        "val_fraction": 0.2,
+        "criterion": CRITERION.__name__,
+        "target_weights": TARGET_WEIGHTS.tolist() if TARGET_WEIGHTS is not None else None,
+        "mean_weights": MEAN_WEIGHTS.tolist() if MEAN_WEIGHTS is not None else None,
+        "overlap_target_index": OVERLAP_TARGET_INDEX,
+        "overlap_target_name": TARGET_COLS[OVERLAP_TARGET_INDEX],
+    }
+
+    if report_text is not None:
+        metadata["report_text"] = report_text
+
+    return metadata
 
 if TRAIN:
 
@@ -163,6 +211,14 @@ if TRAIN:
             best_vals[f"best_rmse_{name}"] = float("inf")
 
         best_reports = {}
+
+    if TRACK_BEST_OVERLAP:
+        os.makedirs(OVERLAP_MODEL_DIR, exist_ok=True)
+        best_overlap = {
+            "overlap": -float("inf"),
+            "mae": float("inf"),
+            "epoch": 0,
+        }
 
     for epoch in range(EPOCHS):
         model.train()
@@ -196,6 +252,8 @@ if TRAIN:
         total_val_mae = torch.zeros(len(TARGET_COLS), device=device)
         total_val_sq = torch.zeros(len(TARGET_COLS), device=device)
         total_count = 0
+        overlap_pred_parts = []
+        overlap_true_parts = []
 
         with torch.no_grad():
             for xb, yb in val_loader:
@@ -227,6 +285,9 @@ if TRAIN:
                 total_val_sq += (diff ** 2).sum(dim=0)
                 total_count += xb.size(0)
 
+                overlap_pred_parts.append(mu_phys.detach().cpu())
+                overlap_true_parts.append(yb_phys.detach().cpu())
+
         val_loss /= len(val_loader.dataset)
 
         per_target_mae = (total_val_mae / total_count).detach().cpu().numpy()
@@ -235,6 +296,25 @@ if TRAIN:
         overall_val_mae = per_target_mae.mean()
         overall_val_rmse = per_target_rmse.mean()
         current_lr = optimizer.param_groups[0]["lr"]
+        overlap_pred = torch.cat(overlap_pred_parts, dim=0).numpy()
+        overlap_true = torch.cat(overlap_true_parts, dim=0).numpy()
+        if OVERLAP_TARGET_INDEX == PHI_INDEX:
+            overlap_pred[:, PHI_INDEX] = np.arctan2(
+                np.sin(overlap_pred[:, PHI_INDEX]),
+                np.cos(overlap_pred[:, PHI_INDEX])
+            )
+            overlap_true[:, PHI_INDEX] = np.arctan2(
+                np.sin(overlap_true[:, PHI_INDEX]),
+                np.cos(overlap_true[:, PHI_INDEX])
+            )
+        target_overlap = compute_target_histogram_overlap(
+            y_true=overlap_true,
+            y_pred=overlap_pred,
+            target_index=OVERLAP_TARGET_INDEX,
+            target_cols=TARGET_COLS,
+            bins=100,
+        )
+        target_mae = float(per_target_mae[OVERLAP_TARGET_INDEX])
 
         training_history["epoch"].append(epoch + 1)
         training_history["train_loss"].append(train_loss)
@@ -242,6 +322,10 @@ if TRAIN:
         training_history["val_mean_mae"].append(overall_val_mae)
         training_history["val_mean_rmse"].append(overall_val_rmse)
         training_history["learning_rate"].append(current_lr)
+
+        overlap_history["epoch"].append(epoch + 1)
+        overlap_history["overlap"].append(target_overlap)
+        overlap_history["mae"].append(target_mae)
 
         # ===== build report string =====
         report = format_epoch_report(
@@ -257,6 +341,10 @@ if TRAIN:
         )
 
         print(report)
+        print(
+            f"   Overlap {TARGET_COLS[OVERLAP_TARGET_INDEX]}: "
+            f"{target_overlap:.6f} | MAE: {target_mae:.6f}"
+        )
 
         # ===== GOLDEN TRACKING =====
         if TRACK_GOLDEN:
@@ -271,28 +359,7 @@ if TRAIN:
                     epoch,
                     report,
                     GOLDEN_MODEL_DIR,
-                    {
-                        "target_cols": TARGET_COLS,
-                        "feature_cols": FEATURE_COLS,
-                        "model_type": "HeteroTrackNet",
-                        "input_dim": input_dim,
-                        "output_dim": len(TARGET_COLS),
-                        "y_mean": y_mean,
-                        "y_std": y_std,
-                        "x_mean": x_mean,
-                        "x_std": x_std,
-                        "hidden_layers": HIDDEN_LAYERS,
-                        "use_batchnorm": True,
-                        "dropout": 0.10,
-                        "activation": "ReLU",
-                        "batch_size": BATCH_SIZE,
-                        "seed": SEED,
-                        "val_fraction": 0.2,
-                        "criterion": CRITERION.__name__,
-                        "target_weights": TARGET_WEIGHTS.tolist() if TARGET_WEIGHTS is not None else None,
-                        "mean_weights": MEAN_WEIGHTS.tolist() if MEAN_WEIGHTS is not None else None,
-                        "report_text": report,
-                    }
+                    build_checkpoint_metadata(report_text=report)
                 )
                 best_reports[name] = report
 
@@ -319,6 +386,67 @@ if TRAIN:
                     best_vals[f"best_rmse_{name}"] = per_target_rmse[i]
                     save(f"best_rmse_{name}", per_target_rmse[i])
 
+        if TRACK_BEST_OVERLAP:
+            overlap_improved = (
+                target_overlap > best_overlap["overlap"]
+                or (
+                    target_overlap == best_overlap["overlap"]
+                    and target_mae < best_overlap["mae"]
+                )
+            )
+
+            if overlap_improved:
+                best_overlap["overlap"] = target_overlap
+                best_overlap["mae"] = target_mae
+                best_overlap["epoch"] = epoch + 1
+
+                overlap_target_name = TARGET_COLS[OVERLAP_TARGET_INDEX]
+                overlap_tag = f"best_overlap_{overlap_target_name}"
+                overlap_model_path = os.path.join(OVERLAP_MODEL_DIR, f"{overlap_tag}.pt")
+
+                metadata = build_checkpoint_metadata(report_text=report)
+                metadata.update(
+                    {
+                        "metric_tag": overlap_tag,
+                        "metric_value": float(target_overlap),
+                        "overlap": float(target_overlap),
+                        "overlap_mae": float(target_mae),
+                    }
+                )
+
+                save_model_checkpoint(
+                    save_path=overlap_model_path,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch + 1,
+                    metadata=metadata,
+                )
+
+                overlap_plot_paths = make_val_diagnostic_plots(
+                    model=model,
+                    val_loader=val_loader,
+                    device=device,
+                    y_mean_t=y_mean_t,
+                    y_std_t=y_std_t,
+                    target_cols=TARGET_COLS,
+                    phi_index=PHI_INDEX,
+                    output_dir=PLOT_DIR,
+                    prefix=overlap_tag,
+                    bins=100,
+                    density=True,
+                    show=False,
+                )
+
+                print(
+                    f"   New best overlap model for {overlap_target_name}: "
+                    f"{target_overlap:.6f} at epoch {epoch + 1}"
+                )
+                print(f"   Saved overlap model: {overlap_model_path}")
+                print("   Saved best overlap plots:")
+                for plot_name, plot_path in overlap_plot_paths.items():
+                    print(f"      {plot_name}: {plot_path}")
+
         scheduler.step()
 
     # ===== write FINAL summary ONLY ONCE =====
@@ -337,13 +465,31 @@ if PLOT_TRAINING_HISTORY:
     history_plot_paths = make_training_history_plots(
         history=training_history,
         output_dir=PLOT_DIR,
-        prefix="hetero_val",
+        prefix=PLOT_PREFIX,
         show=False,
     )
     if history_plot_paths:
         print("========== Saved training history plots: ==========")
         for plot_name, plot_path in history_plot_paths.items():
             print(f"  {plot_name}: {plot_path}")
+
+if PLOT_OVERLAP_HISTORY:
+    if overlap_history["epoch"]:
+        overlap_target_name = TARGET_COLS[OVERLAP_TARGET_INDEX]
+        overlap_history_path = os.path.join(
+            PLOT_DIR,
+            f"{PLOT_PREFIX}_overlap_{overlap_target_name}_over_time.png"
+        )
+        plot_overlap_history(
+            history=overlap_history,
+            target_name=overlap_target_name,
+            save_path=overlap_history_path,
+            show=False,
+        )
+        print("========== Saved overlap history plot: ==========")
+        print(f"  overlap_history: {overlap_history_path}")
+    else:
+        print("Skipping overlap history plot because no epochs were recorded.")
             
 if PLOT_VAL_DISTRIBUTIONS:
     plot_paths = make_val_diagnostic_plots(
@@ -355,7 +501,7 @@ if PLOT_VAL_DISTRIBUTIONS:
         target_cols=TARGET_COLS,
         phi_index=PHI_INDEX,
         output_dir=PLOT_DIR,
-        prefix="hetero_val",
+        prefix=PLOT_PREFIX,
         bins=100,
         density=True,
         show=True
