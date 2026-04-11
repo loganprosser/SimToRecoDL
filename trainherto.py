@@ -5,7 +5,7 @@ import torch.nn as nn
 import numpy as np
 
 from model import HeteroTrackNet
-from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi
+from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
 from helpers_data import load_track_data, print_data_shapes, set_seed
 from helpers import (
         wrapped_angle_diff,
@@ -28,15 +28,19 @@ from helpers_vis import (
 
 # ====== Running Constants =======
 EPOCHS = 2000
-TARGET_WEIGHTS = torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0], dtype=torch.float32)
+TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
+# know that 1 is prob too high of a weighting since this loss is HUGE at small values
+LAMBDA_REL = torch.tensor([.25, .25, .25, .25, .25])
+
+
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
 #HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
 HIDDEN_LAYERS = [2048, 2048, 1024, 512] 
-CRITERION = hetero_gaussian_nll_with_phi
+CRITERION = hetero_gaussian_nll_with_phi_relative # paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
 
 # ====== Running Flags =======
 CHECK_SHAPE = False

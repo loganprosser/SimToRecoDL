@@ -10,6 +10,62 @@ import torch.nn as nn
 
 from helpers import angle_diff
 
+
+def hetero_gaussian_nll_with_phi_relative(
+    y,
+    mu,
+    logvar,
+    phi_index=None,
+    min_logvar=-10.0,
+    max_logvar=10.0,
+    target_weights=None,
+    mean_weights=None,
+    lambda_rel=1.0,
+    eps=1e-6,
+):
+    # lambda_rel is a weighting tensor here for how much we wieght the relative_loss for each component in standard order as always
+    
+    logvar = torch.clamp(logvar, min=min_logvar, max=max_logvar)
+
+    diff = y - mu
+
+    if phi_index is not None:
+        diff = diff.clone()
+        diff[:, phi_index] = angle_diff(mu[:, phi_index], y[:, phi_index])
+
+    sq_error = diff ** 2
+
+    if mean_weights is not None:
+        mean_weights = mean_weights.to(y.device).view(1, -1)
+    else:
+        mean_weights = 1.0
+
+    hetero_loss = 0.5 * (
+        logvar + mean_weights * sq_error * torch.exp(-logvar)
+    )
+
+    # can also change this loss to not be squared if its too dominating
+    scale = torch.abs(y) + eps
+    relative_loss = sq_error / scale
+
+    if not torch.is_tensor(lambda_rel):
+        lambda_rel = torch.tensor(lambda_rel, device=y.device, dtype=y.dtype)
+
+    if lambda_rel.ndim == 0:
+        lambda_rel = lambda_rel.view(1, 1)
+    else:
+        lambda_rel = lambda_rel.to(y.device, dtype=y.dtype).view(1, -1)
+
+    total_loss = hetero_loss + lambda_rel * relative_loss
+
+    if target_weights is not None:
+        target_weights = target_weights.to(y.device).view(1, -1)
+        total_loss = total_loss * target_weights
+
+    return total_loss.mean()
+
+
+
 def hetero_gaussian_nll_with_phi(
     y,
     mu,

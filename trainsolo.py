@@ -21,6 +21,9 @@ from helpers_vis import (
 from loss import hetero_gaussian_nll_with_phi
 from model import HeteroTrackNet
 
+# TODO maybe use another togglable filter becasue overlap can be bias include like a density matching penality instead of straight overlap
+
+
 
 # ====== Running Constants =======
 EPOCHS = 2000
