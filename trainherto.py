@@ -31,7 +31,7 @@ EPOCHS = 2000
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
-LAMBDA_REL = torch.tensor([.25, .25, .25, .25, .25])
+LAMBDA_REL = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 
 
 
