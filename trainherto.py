@@ -28,10 +28,10 @@ from helpers_vis import (
 
 # ====== Running Constants =======
 EPOCHS = 750
-TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 100, 1.0], dtype=torch.float32)
+TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, .01, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
-LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 50, 0])
+LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 100, 0])
 
 
 
