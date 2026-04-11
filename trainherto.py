@@ -54,7 +54,7 @@ TRACK_BEST_OVERLAP = True
 PLOT_OVERLAP_HISTORY = True
 
 # ====== Overlap tracking settings ======
-FAST_PREFIX = {4}
+FAST_PREFIX = 4
 OVERLAP_TARGET_INDEX = 3
 OVERLAP_MODEL_DIR = f"{FAST_PREFIX}maxoverlapd0"
 
