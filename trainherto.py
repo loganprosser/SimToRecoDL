@@ -31,7 +31,7 @@ EPOCHS = 2000
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
-LAMBDA_REL = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
+LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, .5, .1])
 
 
 
@@ -55,13 +55,15 @@ PLOT_OVERLAP_HISTORY = True
 
 # ====== Overlap tracking settings ======
 OVERLAP_TARGET_INDEX = 3
-OVERLAP_MODEL_DIR = "2maxoverlapd0"
+OVERLAP_MODEL_DIR = "3maxoverlapd0"
+
+#1: [5x .25] 2: [5x 1.0] 3: [0,0,0,.5,.1]
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = "2RELgoldenmodels"
-GOLDEN_SUMMARY_FILE = "2RELgoldeniteration.txt"
-PLOT_DIR = "2RELplots"
-PLOT_PREFIX = "2relative_loss_hetero"
+GOLDEN_MODEL_DIR = "3RELgoldenmodels"
+GOLDEN_SUMMARY_FILE = "3RELgoldeniteration.txt"
+PLOT_DIR = "3RELplots"
+PLOT_PREFIX = "3relative_loss_hetero"
 
 # ===== Picking Device ========
 '''
