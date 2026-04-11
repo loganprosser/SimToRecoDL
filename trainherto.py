@@ -58,10 +58,10 @@ OVERLAP_TARGET_INDEX = 3
 OVERLAP_MODEL_DIR = "maxoverlapd0"
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = "goldenmodelsRUN3"
-GOLDEN_SUMMARY_FILE = "goldeniterationRUN3.txt"
-PLOT_DIR = "plotsCODEX"
-PLOT_PREFIX = "hetero_val"
+GOLDEN_MODEL_DIR = "RELgoldenmodels"
+GOLDEN_SUMMARY_FILE = "RELgoldeniteration.txt"
+PLOT_DIR = "RELplots"
+PLOT_PREFIX = "relative_loss_hetero"
 
 # ===== Picking Device ========
 device = torch.device(
