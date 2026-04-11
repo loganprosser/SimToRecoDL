@@ -372,7 +372,7 @@ def plot_pull_distributions(
         ax.axvline(1.0, color="gray", linewidth=1.0, linestyle="--")
         
         if i == 3:
-            ax.set_xlim(-300, 300)
+            ax.set_xlim(-100, 100)
             # optional: match y scaling too
             # ax.set_ylim(0, some_value)
         

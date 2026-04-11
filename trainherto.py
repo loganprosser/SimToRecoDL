@@ -340,11 +340,13 @@ if TRAIN:
             TARGET_COLS
         )
 
-        print(report)
-        print(
+        overlap_report = (
             f"   Overlap {TARGET_COLS[OVERLAP_TARGET_INDEX]}: "
             f"{target_overlap:.6f} | MAE: {target_mae:.6f}"
         )
+
+        print(report)
+        print(overlap_report)
 
         # ===== GOLDEN TRACKING =====
         if TRACK_GOLDEN:
@@ -403,8 +405,9 @@ if TRAIN:
                 overlap_target_name = TARGET_COLS[OVERLAP_TARGET_INDEX]
                 overlap_tag = f"best_overlap_{overlap_target_name}"
                 overlap_model_path = os.path.join(OVERLAP_MODEL_DIR, f"{overlap_tag}.pt")
+                overlap_report_path = os.path.join(PLOT_DIR, f"{overlap_tag}_training_report.txt")
 
-                metadata = build_checkpoint_metadata(report_text=report)
+                metadata = build_checkpoint_metadata(report_text=f"{report}\n{overlap_report}")
                 metadata.update(
                     {
                         "metric_tag": overlap_tag,
@@ -438,11 +441,27 @@ if TRAIN:
                     show=False,
                 )
 
+                os.makedirs(PLOT_DIR, exist_ok=True)
+                with open(overlap_report_path, "w") as f:
+                    f.write("BEST OVERLAP TRAINING REPORT\n")
+                    f.write("=" * 80 + "\n")
+                    f.write(f"target_index: {OVERLAP_TARGET_INDEX}\n")
+                    f.write(f"target_name: {overlap_target_name}\n")
+                    f.write(f"epoch: {epoch + 1}\n")
+                    f.write(f"overlap: {target_overlap:.6f}\n")
+                    f.write(f"mae: {target_mae:.6f}\n")
+                    f.write("\n")
+                    f.write(report)
+                    f.write("\n")
+                    f.write(overlap_report)
+                    f.write("\n")
+
                 print(
                     f"   New best overlap model for {overlap_target_name}: "
                     f"{target_overlap:.6f} at epoch {epoch + 1}"
                 )
                 print(f"   Saved overlap model: {overlap_model_path}")
+                print(f"   Saved overlap report: {overlap_report_path}")
                 print("   Saved best overlap plots:")
                 for plot_name, plot_path in overlap_plot_paths.items():
                     print(f"      {plot_name}: {plot_path}")
