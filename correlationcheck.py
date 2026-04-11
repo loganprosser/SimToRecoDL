@@ -10,7 +10,7 @@ from helpers_data import DEFAULT_DATA_PATH, DEFAULT_TARGET_COLS, build_hit_featu
 """
 How to run:
 
-Quick terminal-only sanity check:
+Run and save report, CSVs, and heatmap:
     python3 SimToRecoDL/correlationcheck.py
 
 Check only the solo pca_dxy target:
@@ -19,12 +19,16 @@ Check only the solo pca_dxy target:
 Use Spearman rank correlation instead of Pearson:
     python3 SimToRecoDL/correlationcheck.py --method spearman
 
-Save report, CSVs, and heatmap:
-    python3 SimToRecoDL/correlationcheck.py --save
+Print only and do not save files:
+    python3 SimToRecoDL/correlationcheck.py --no-save
 
 Save report and CSVs without a heatmap:
-    python3 SimToRecoDL/correlationcheck.py --save --no-heatmap
+    python3 SimToRecoDL/correlationcheck.py --no-heatmap
+    
+    # -1 means inversly related, +1 directly related, 0 no relatoin could still learn tho with some kernalized input vector directly (kinda what the NN does to leanr stuff)
+    
 """
+
 
 
 DEFAULT_OUTPUT_DIR = "correlation_checks"
@@ -171,8 +175,8 @@ def parse_args():
     parser.add_argument("--method", default="pearson", choices=["pearson", "spearman", "manual_pearson"])
     parser.add_argument("--target-mode", default="full", choices=["full", "solo"])
     parser.add_argument("--top-n", type=int, default=12)
-    parser.add_argument("--save", action="store_true", help="Save report, CSVs, and heatmap to output-dir")
-    parser.add_argument("--no-heatmap", action="store_true", help="Skip heatmap png generation when --save is on")
+    parser.add_argument("--no-save", action="store_true", help="Only print to terminal; do not write files")
+    parser.add_argument("--no-heatmap", action="store_true", help="Skip heatmap png generation")
     return parser.parse_args()
 
 
@@ -200,8 +204,8 @@ def main():
 
     print(report_text)
 
-    if not args.save:
-        print("\nNot saving files. Re-run with --save to write CSVs, report, and heatmap.")
+    if args.no_save:
+        print("\nNot saving files because --no-save is on.")
         return
 
     os.makedirs(args.output_dir, exist_ok=True)
