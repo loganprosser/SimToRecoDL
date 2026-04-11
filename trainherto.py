@@ -28,8 +28,8 @@ from helpers_vis import (
 
 # ====== Running Constants =======
 EPOCHS = 2000
-TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 5.0, 1.0], dtype=torch.float32)
-MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 5.0, 1.0])
+TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], dtype=torch.float32)
+MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
