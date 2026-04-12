@@ -64,8 +64,6 @@ def hetero_gaussian_nll_with_phi_relative(
 
     return total_loss.mean()
 
-
-
 def hetero_gaussian_nll_with_phi(
     y,
     mu,
