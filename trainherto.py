@@ -22,9 +22,8 @@ from helpers_vis import (
     plot_overlap_history,
     print_final_validation_samples,
 )
-#TODO fix bashrc script on classe machine keeps getting hung on something not sure whta
 # TODO use a different learning funciton or play with rate as we go on
-# TODO get a shit ton of data and see if we can acomplish double descent??
+# TODO get a shit ton of data and see if we can acomplish double descent???? (idek if thats possible here)
 
 # ====== Running Constants =======
 EPOCHS = 750
@@ -40,7 +39,7 @@ LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 100, 0])
 BATCH_SIZE = 256
 #HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
 HIDDEN_LAYERS = [512, 512, 256] #maybe add residuals
-CRITERION = hetero_gaussian_nll_with_phi_relative # paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
+CRITERION = hetero_gaussian_nll_with_phi # paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
