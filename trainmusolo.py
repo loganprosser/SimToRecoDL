@@ -26,7 +26,8 @@ from model import SimpleTrackNet
 EPOCHS = 300
 BATCH_SIZE = 256
 HIDDEN_LAYERS = [256, 128, 64]
-DROPOUT = 0.15 
+DROPOUT = 0.00
+BATCH_NORM = False
 TARGET_COLS = ["pca_dxy"]
 CRITERION = huber_loss_with_phi
 
@@ -95,7 +96,7 @@ model = SimpleTrackNet(
     input_dim=input_dim,
     hidden_layers=HIDDEN_LAYERS,
     output_dim=output_dim,
-    use_batchnorm=True,
+    use_batchnorm=BATCH_NORM,
     dropout=DROPOUT,
     activation=nn.ReLU,
 )
@@ -118,7 +119,7 @@ def build_checkpoint_metadata(report_text=None):
         "x_mean": x_mean,
         "x_std": x_std,
         "hidden_layers": HIDDEN_LAYERS,
-        "use_batchnorm": True,
+        "use_batchnorm": BATCH_NORM,
         "dropout": DROPOUT,
         "activation": "ReLU",
         "batch_size": BATCH_SIZE,
