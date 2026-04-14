@@ -18,7 +18,7 @@ from helpers_vis import (
     plot_overlap_history,
     print_final_validation_samples,
 )
-from loss import hetero_gaussian_nll_with_phi
+from loss import hetero_gaussian_nll_with_phi, hetero_huber_corr_loss
 from model import HeteroTrackNet
 
 # TODO maybe use another togglable filter becasue overlap can be bias include like a density matching penality instead of straight overlap
@@ -28,9 +28,9 @@ from model import HeteroTrackNet
 # ====== Running Constants =======
 EPOCHS = 2000
 BATCH_SIZE = 256
-HIDDEN_LAYERS = [2048, 2048, 1024, 512]
+HIDDEN_LAYERS = [1024, 1024, 512]
 TARGET_COLS = ["pca_dxy"]
-CRITERION = hetero_gaussian_nll_with_phi
+CRITERION = hetero_huber_corr_loss
 
 # ====== Running Flags =======
 CHECK_SHAPE = False

@@ -10,6 +10,126 @@ import torch.nn as nn
 
 from helpers import angle_diff
 
+def hetero_huber_corr_loss(
+    y,
+    mu,
+    logvar,
+    phi_index=None,
+    delta=1.0,
+    min_logvar=-6.0,
+    max_logvar=4.0,
+    target_weights=None,
+    mean_weights=None,
+    lambda_corr=0.25,
+    lambda_tail=0.0,
+    tail_power=1.0,
+    eps=1e-8,
+):
+    """
+    Robust heteroscedastic multi-target loss with optional correlation term.
+
+    Inputs
+    ------
+    y       : [B, D] true targets
+    mu      : [B, D] predicted means
+    logvar  : [B, D] predicted log variances
+
+    phi_index:
+        Optional column index for wrapped angular target.
+
+    delta:
+        Huber threshold. If targets are normalized, 0.5 to 1.0 is a good start.
+
+    lambda_corr:
+        Weight on correlation penalty. Higher = stronger push to track target shape.
+
+    lambda_tail:
+        Optional extra weighting for larger-|y| examples so dense near-zero regions
+        do not dominate as much.
+
+    tail_power:
+        Controls how strongly large-|y| examples are emphasized.
+
+    Returns
+    -------
+    scalar loss
+    """
+
+    # keep predicted variance from becoming absurd
+    logvar = torch.clamp(logvar, min=min_logvar, max=max_logvar)
+
+    # residuals
+    diff = y - mu
+
+    # wrap phi residual if needed
+    if phi_index is not None:
+        diff = diff.clone()
+        diff[:, phi_index] = angle_diff(mu[:, phi_index], y[:, phi_index])
+
+    # -------------------------
+    # 1. robust Huber data term
+    # -------------------------
+    abs_diff = diff.abs()
+    huber = torch.where(
+        abs_diff <= delta,
+        0.5 * diff ** 2,
+        delta * (abs_diff - 0.5 * delta),
+    )
+
+    # optional per-target weighting on mean-fit part
+    if mean_weights is not None:
+        mean_weights = mean_weights.to(y.device, dtype=y.dtype).view(1, -1)
+    else:
+        mean_weights = 1.0
+
+    # -------------------------
+    # 2. heteroscedastic weighting
+    # -------------------------
+    # This still predicts uncertainty.
+    # exp(0.5 * logvar) would be sigma.
+    hetero_loss = 0.5 * logvar + mean_weights * huber * torch.exp(-logvar)
+
+    # optional extra emphasis on larger-|y| values
+    if lambda_tail > 0.0:
+        tail_scale = 1.0 + lambda_tail * (y.abs() ** tail_power)
+        hetero_loss = hetero_loss * tail_scale
+
+    # optional per-target weighting on total target contribution
+    if target_weights is not None:
+        target_weights = target_weights.to(y.device, dtype=y.dtype).view(1, -1)
+        hetero_loss = hetero_loss * target_weights
+
+    hetero_loss = hetero_loss.mean()
+
+    # -------------------------
+    # 3. correlation penalty on mu
+    # -------------------------
+    # We do this on mean predictions only, not variance.
+    # For wrapped phi, raw Pearson correlation is usually not meaningful,
+    # so we exclude that dimension from correlation if there are other dims.
+    if phi_index is not None and mu.shape[1] > 1:
+        keep = [i for i in range(mu.shape[1]) if i != phi_index]
+        mu_corr = mu[:, keep]
+        y_corr = y[:, keep]
+    else:
+        mu_corr = mu
+        y_corr = y
+
+    mu_centered = mu_corr - mu_corr.mean(dim=0, keepdim=True)
+    y_centered = y_corr - y_corr.mean(dim=0, keepdim=True)
+
+    mu_std = torch.sqrt((mu_centered ** 2).mean(dim=0) + eps)
+    y_std = torch.sqrt((y_centered ** 2).mean(dim=0) + eps)
+
+    corr = (mu_centered * y_centered).mean(dim=0) / (mu_std * y_std)
+    corr = torch.clamp(corr, -1.0, 1.0)
+
+    corr_loss = (1.0 - corr).mean()
+
+    # final combined loss
+    return hetero_loss + lambda_corr * corr_loss
+
+
 
 def hetero_gaussian_nll_with_phi_relative(
     y,
