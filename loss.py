@@ -10,21 +10,25 @@ import torch.nn as nn
 
 from helpers import angle_diff
 
-
 def huber_loss_with_phi(
     y,
     pred,
     phi_index=None,
-    delta=1.0,
+    delta=0.5,
     target_weights=None,
-    lambda_corr=.25,
+    lambda_corr=0.25,
+    lambda_scale=1.0,
+    lambda_mean=0.1,
     eps=1e-8,
 ):
     """
-    Mean-only Huber loss for normalized targets.
+    Mean-only Huber loss for normalized targets, with:
+    1. Huber fit term
+    2. correlation term
+    3. scale-matching term
+    4. mean-matching term
 
-    This is intended for models that predict only the target mean, with no
-    log-variance or standard-deviation output.
+    Good for preventing both collapse and over-dispersion.
     """
     diff = pred - y
 
@@ -32,6 +36,9 @@ def huber_loss_with_phi(
         diff = diff.clone()
         diff[:, phi_index] = angle_diff(pred[:, phi_index], y[:, phi_index])
 
+    # -------------------------
+    # 1. Huber fit term
+    # -------------------------
     abs_diff = diff.abs()
     huber = torch.where(
         abs_diff <= delta,
@@ -45,16 +52,22 @@ def huber_loss_with_phi(
 
     huber_loss = huber.mean()
 
+    # -------------------------
+    # exclude phi from corr/scale if needed
+    # -------------------------
     if phi_index is not None and pred.shape[1] > 1:
         keep = [i for i in range(pred.shape[1]) if i != phi_index]
-        pred_corr = pred[:, keep]
-        y_corr = y[:, keep]
+        pred_stats = pred[:, keep]
+        y_stats = y[:, keep]
     else:
-        pred_corr = pred
-        y_corr = y
+        pred_stats = pred
+        y_stats = y
 
-    pred_centered = pred_corr - pred_corr.mean(dim=0, keepdim=True)
-    y_centered = y_corr - y_corr.mean(dim=0, keepdim=True)
+    # -------------------------
+    # 2. Correlation term
+    # -------------------------
+    pred_centered = pred_stats - pred_stats.mean(dim=0, keepdim=True)
+    y_centered = y_stats - y_stats.mean(dim=0, keepdim=True)
 
     pred_std = torch.sqrt((pred_centered ** 2).mean(dim=0) + eps)
     y_std = torch.sqrt((y_centered ** 2).mean(dim=0) + eps)
@@ -64,8 +77,26 @@ def huber_loss_with_phi(
 
     corr_loss = (1.0 - corr).mean()
 
-    return huber_loss + lambda_corr * corr_loss
+    # -------------------------
+    # 3. Scale-matching term
+    # -------------------------
+    # Penalizes predictions having too much or too little spread.
+    scale_loss = ((pred_std - y_std) ** 2).mean()
 
+    # -------------------------
+    # 4. Mean-matching term
+    # -------------------------
+    # Usually small if targets are normalized, but stabilizes things.
+    pred_mean = pred_stats.mean(dim=0)
+    y_mean = y_stats.mean(dim=0)
+    mean_loss = ((pred_mean - y_mean) ** 2).mean()
+
+    return (
+        huber_loss
+        + lambda_corr * corr_loss
+        + lambda_scale * scale_loss
+        + lambda_mean * mean_loss
+    )
 
 def hetero_huber_corr_loss(
     y,
