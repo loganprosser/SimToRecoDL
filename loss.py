@@ -10,6 +10,40 @@ import torch.nn as nn
 
 from helpers import angle_diff
 
+
+def huber_loss_with_phi(
+    y,
+    pred,
+    phi_index=None,
+    delta=1.0,
+    target_weights=None,
+):
+    """
+    Mean-only Huber loss for normalized targets.
+
+    This is intended for models that predict only the target mean, with no
+    log-variance or standard-deviation output.
+    """
+    diff = pred - y
+
+    if phi_index is not None:
+        diff = diff.clone()
+        diff[:, phi_index] = angle_diff(pred[:, phi_index], y[:, phi_index])
+
+    abs_diff = diff.abs()
+    loss = torch.where(
+        abs_diff <= delta,
+        0.5 * diff ** 2,
+        delta * (abs_diff - 0.5 * delta),
+    )
+
+    if target_weights is not None:
+        target_weights = target_weights.to(y.device, dtype=y.dtype).view(1, -1)
+        loss = loss * target_weights
+
+    return loss.mean()
+
+
 def hetero_huber_corr_loss(
     y,
     mu,
@@ -262,5 +296,4 @@ def bad_hetero_loss(y, mu, logvar):
 def actual_herto_loss(y, mu, logvar):
     logvar = torch.clamp(logvar, min=-5, max=5)
     return (logvar + (y - mu)**2 * torch.exp(-logvar)).mean()
-
 
