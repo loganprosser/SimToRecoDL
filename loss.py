@@ -17,7 +17,7 @@ def huber_loss_with_phi(
     phi_index=None,
     delta=1.0,
     target_weights=None,
-    lambda_corr=1.0,
+    lambda_corr=.25,
     eps=1e-8,
 ):
     """
