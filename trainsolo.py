@@ -26,7 +26,7 @@ from model import HeteroTrackNet
 
 
 # ====== Running Constants =======
-EPOCHS = 750
+EPOCHS = 500
 BATCH_SIZE = 256
 HIDDEN_LAYERS = [1024, 1024, 512]
 TARGET_COLS = ["pca_dxy"]
@@ -37,12 +37,12 @@ CHECK_SHAPE = False
 TEST_TRAIN = False
 TRAIN = True
 PRINT_FINAL_VAL_SAMPLES = True
-SAVE_BEST_MODELS = True
+SAVE_BEST_MODELS = False
 PLOT_VAL_DISTRIBUTIONS = True
 PLOT_TRAINING_HISTORY = True
-PLOT_OVERLAP_HISTORY = True
+PLOT_OVERLAP_HISTORY = False
 
-# ====== Save settings ======
+
 SAVE_DIR = "solomodelsHUBER"
 PLOT_DIR = "plotsSOLOHUBER"
 PLOT_PREFIX = "huber_solo_pca_dxy"
