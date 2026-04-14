@@ -23,9 +23,10 @@ from model import SimpleTrackNet
 
 
 # ====== Running Constants =======
-EPOCHS = 750
+EPOCHS = 300
 BATCH_SIZE = 256
-HIDDEN_LAYERS = [512, 512, 256] #TODO decrease model hidden layers prob overfitting here
+HIDDEN_LAYERS = [256, 128, 64]
+DROPOUT = 0.15 
 TARGET_COLS = ["pca_dxy"]
 CRITERION = huber_loss_with_phi
 
@@ -95,7 +96,7 @@ model = SimpleTrackNet(
     hidden_layers=HIDDEN_LAYERS,
     output_dim=output_dim,
     use_batchnorm=True,
-    dropout=0.10,
+    dropout=DROPOUT,
     activation=nn.ReLU,
 )
 model.to(device)
@@ -118,7 +119,7 @@ def build_checkpoint_metadata(report_text=None):
         "x_std": x_std,
         "hidden_layers": HIDDEN_LAYERS,
         "use_batchnorm": True,
-        "dropout": 0.10,
+        "dropout": DROPOUT,
         "activation": "ReLU",
         "batch_size": BATCH_SIZE,
         "seed": SEED,
