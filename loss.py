@@ -17,6 +17,8 @@ def huber_loss_with_phi(
     phi_index=None,
     delta=1.0,
     target_weights=None,
+    lambda_corr=1.0,
+    eps=1e-8,
 ):
     """
     Mean-only Huber loss for normalized targets.
@@ -31,7 +33,7 @@ def huber_loss_with_phi(
         diff[:, phi_index] = angle_diff(pred[:, phi_index], y[:, phi_index])
 
     abs_diff = diff.abs()
-    loss = torch.where(
+    huber = torch.where(
         abs_diff <= delta,
         0.5 * diff ** 2,
         delta * (abs_diff - 0.5 * delta),
@@ -39,9 +41,30 @@ def huber_loss_with_phi(
 
     if target_weights is not None:
         target_weights = target_weights.to(y.device, dtype=y.dtype).view(1, -1)
-        loss = loss * target_weights
+        huber = huber * target_weights
 
-    return loss.mean()
+    huber_loss = huber.mean()
+
+    if phi_index is not None and pred.shape[1] > 1:
+        keep = [i for i in range(pred.shape[1]) if i != phi_index]
+        pred_corr = pred[:, keep]
+        y_corr = y[:, keep]
+    else:
+        pred_corr = pred
+        y_corr = y
+
+    pred_centered = pred_corr - pred_corr.mean(dim=0, keepdim=True)
+    y_centered = y_corr - y_corr.mean(dim=0, keepdim=True)
+
+    pred_std = torch.sqrt((pred_centered ** 2).mean(dim=0) + eps)
+    y_std = torch.sqrt((y_centered ** 2).mean(dim=0) + eps)
+
+    corr = (pred_centered * y_centered).mean(dim=0) / (pred_std * y_std)
+    corr = torch.clamp(corr, -1.0, 1.0)
+
+    corr_loss = (1.0 - corr).mean()
+
+    return huber_loss + lambda_corr * corr_loss
 
 
 def hetero_huber_corr_loss(
@@ -296,4 +319,3 @@ def bad_hetero_loss(y, mu, logvar):
 def actual_herto_loss(y, mu, logvar):
     logvar = torch.clamp(logvar, min=-5, max=5)
     return (logvar + (y - mu)**2 * torch.exp(-logvar)).mean()
-

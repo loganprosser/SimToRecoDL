@@ -37,7 +37,7 @@ PRINT_FINAL_VAL_SAMPLES = True
 SAVE_BEST_MODELS = False
 PLOT_VAL_DISTRIBUTIONS = True
 PLOT_TRAINING_HISTORY = True
-PLOT_OVERLAP_HISTORY = False
+PLOT_OVERLAP_HISTORY = True
 
 # ====== Save settings ======
 SAVE_DIR = "musolomodelsHUBER"
@@ -254,6 +254,8 @@ if TRAIN:
         total_count = 0
         overlap_pred_parts = []
         overlap_true_parts = []
+        val_pred_norm_parts = []
+        val_true_norm_parts = []
 
         with torch.no_grad():
             for xb, yb in val_loader:
@@ -274,6 +276,8 @@ if TRAIN:
 
                 overlap_pred_parts.append(pred_phys.detach().cpu())
                 overlap_true_parts.append(yb_phys.detach().cpu())
+                val_pred_norm_parts.append(pred.detach().cpu())
+                val_true_norm_parts.append(yb.detach().cpu())
 
         val_loss /= len(val_loader.dataset)
 
@@ -286,6 +290,8 @@ if TRAIN:
 
         overlap_pred = torch.cat(overlap_pred_parts, dim=0).numpy()
         overlap_true = torch.cat(overlap_true_parts, dim=0).numpy()
+        val_pred_norm = torch.cat(val_pred_norm_parts, dim=0)
+        val_true_norm = torch.cat(val_true_norm_parts, dim=0)
         target_overlap = compute_target_histogram_overlap(
             y_true=overlap_true,
             y_pred=overlap_pred,
@@ -323,6 +329,13 @@ if TRAIN:
 
         print(report)
         print(overlap_report)
+        print("   Normalized validation std pred vs true:")
+        for i, name in enumerate(TARGET_COLS):
+            print(
+                f"      {name}: "
+                f"{val_pred_norm[:, i].std().item():.6f}, "
+                f"{val_true_norm[:, i].std().item():.6f}"
+            )
 
         if SAVE_BEST_MODELS:
             if val_loss < best_vals["best_val_loss"]:
