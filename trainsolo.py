@@ -26,7 +26,7 @@ from model import HeteroTrackNet
 
 
 # ====== Running Constants =======
-EPOCHS = 2000
+EPOCHS = 750
 BATCH_SIZE = 256
 HIDDEN_LAYERS = [1024, 1024, 512]
 TARGET_COLS = ["pca_dxy"]
@@ -43,9 +43,9 @@ PLOT_TRAINING_HISTORY = True
 PLOT_OVERLAP_HISTORY = True
 
 # ====== Save settings ======
-SAVE_DIR = "solomodelsRUN3"
-PLOT_DIR = "plotsSOLO"
-PLOT_PREFIX = "solo_pca_dxy"
+SAVE_DIR = "solomodelsHUBER"
+PLOT_DIR = "plotsSOLOHUBER"
+PLOT_PREFIX = "huber_solo_pca_dxy"
 OVERLAP_TARGET_INDEX = 0
 
 # ===== Picking Device ========
