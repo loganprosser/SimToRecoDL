@@ -25,7 +25,7 @@ from model import SimpleTrackNet
 # ====== Running Constants =======
 EPOCHS = 750
 BATCH_SIZE = 256
-HIDDEN_LAYERS = [1024, 1024, 512]
+HIDDEN_LAYERS = [512, 512, 256] #TODO decrease model hidden layers prob overfitting here
 TARGET_COLS = ["pca_dxy"]
 CRITERION = huber_loss_with_phi
 
