@@ -1,0 +1,35 @@
+saves/
+outputCSVs/
+*.csv
+*.pkl
+*.root
+
+# Python
+__pycache__/
+*.pyc
+
+# Data files 
+data/
+*.csv
+*.pkl
+*.root
+*.npy
+
+# Outputs
+output/
+logs/
+checkpoints/
+
+# VS Code
+.vscode/
+
+# System
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large files
+*.h5
+*.pt
+*.pth
