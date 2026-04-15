@@ -32,8 +32,6 @@ MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
 LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 100, 0])
 
-
-
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
@@ -43,6 +41,7 @@ CRITERION = hetero_gaussian_nll_with_phi # paper_hetero_loss, hetero_gaussian_nl
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
+CHECK_MASK_COUNTS = True # counts if masks are real
 TEST_TRAIN = False
 TRAIN = True
 PRINT_FINAL_VAL_SAMPLES = True
@@ -89,7 +88,12 @@ set_seed(SEED)
 
 
 # ====== Load and prepare data =======
-data = load_track_data(batch_size=BATCH_SIZE, seed=SEED, device=device)
+data = load_track_data(
+    batch_size=BATCH_SIZE,
+    seed=SEED,
+    device=device,
+    print_mask_counts=CHECK_MASK_COUNTS,
+)
 
 train_loader = data.train_loader
 val_loader = data.val_loader
