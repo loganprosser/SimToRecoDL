@@ -30,7 +30,6 @@ EPOCHS = 750
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, .01, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
-LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 100, 0])
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
@@ -38,6 +37,8 @@ BATCH_SIZE = 256
 #HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
 HIDDEN_LAYERS = [512, 512, 256] #maybe add residuals
 CRITERION = hetero_gaussian_nll_with_phi # paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
+BATCH_NORM = False
+DROPOUT = 0.0
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
@@ -48,21 +49,22 @@ PRINT_FINAL_VAL_SAMPLES = True
 TRACK_GOLDEN = True
 PLOT_VAL_DISTRIBUTIONS = True
 PLOT_TRAINING_HISTORY = True
-TRACK_BEST_OVERLAP = True
-PLOT_OVERLAP_HISTORY = True
+TRACK_BEST_OVERLAP = False
+PLOT_OVERLAP_HISTORY = False
 
 # ====== Overlap tracking settings ======
-FAST_PREFIX = 4
+FAST_PREFIX = None
+ACTUAL_PREFIX = "hetero"
 OVERLAP_TARGET_INDEX = 3
-OVERLAP_MODEL_DIR = f"{FAST_PREFIX}maxoverlapd0"
+OVERLAP_MODEL_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_maxoverlapd0"
 
 #1: [5x .25] 2: [5x 1.0] 3: [0,0,0,.5,.1]
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = f"{FAST_PREFIX}goldenmodels"
-GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}goldeniteration.txt"
-PLOT_DIR = f"{FAST_PREFIX}plots"
-PLOT_PREFIX = f"{FAST_PREFIX}relative_loss_hetero"
+GOLDEN_MODEL_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_goldenmodels"
+GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}{ACTUAL_PREFIX}_goldeniteration.txt"
+PLOT_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_plots"
+PLOT_PREFIX = f"{FAST_PREFIX}{ACTUAL_PREFIX}_relative_loss_hetero"
 
 # ===== Picking Device ========
 '''
@@ -127,8 +129,8 @@ model = HeteroTrackNet(
     input_dim=input_dim,
     hidden_layers=HIDDEN_LAYERS,
     output_dim=5,
-    use_batchnorm=True,
-    dropout=0.10,
+    use_batchnorm=BATCH_NORM,
+    dropout=DROPOUT,
     activation=nn.ReLU
 )
 model.to(device)
@@ -195,8 +197,8 @@ def build_checkpoint_metadata(report_text=None):
         "x_mean": x_mean,
         "x_std": x_std,
         "hidden_layers": HIDDEN_LAYERS,
-        "use_batchnorm": True,
-        "dropout": 0.10,
+        "use_batchnorm": BATCH_NORM,
+        "dropout": DROPOUT,
         "activation": "ReLU",
         "batch_size": BATCH_SIZE,
         "seed": SEED,

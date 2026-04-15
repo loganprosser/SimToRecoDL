@@ -61,15 +61,15 @@ PLOT_OVERLAP_HISTORY = False
 FAST_PREFIX = None
 ACTUAL_PREFIX = "canonicalphi"
 OVERLAP_TARGET_INDEX = 3
-OVERLAP_MODEL_DIR = f"{FAST_PREFIX}_{ACTUAL_PREFIX}_maxoverlapd0"
+OVERLAP_MODEL_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_maxoverlapd0"
 
 #1: [5x .25] 2: [5x 1.0] 3: [0,0,0,.5,.1]
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = f"{FAST_PREFIX}_{ACTUAL_PREFIX}_goldenmodels"
-GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}_{ACTUAL_PREFIX}_goldeniteration.txt"
-PLOT_DIR = f"{FAST_PREFIX}_{ACTUAL_PREFIX}_plots"
-PLOT_PREFIX = f"{FAST_PREFIX}_{ACTUAL_PREFIX}_relative_loss_hetero"
+GOLDEN_MODEL_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_goldenmodels"
+GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}{ACTUAL_PREFIX}_goldeniteration.txt"
+PLOT_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_plots"
+PLOT_PREFIX = f"{FAST_PREFIX}{ACTUAL_PREFIX}_relative_loss_hetero"
 
 # ===== Picking Device ========
 '''
