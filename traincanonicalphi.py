@@ -30,7 +30,7 @@ from helpers_vis import (
 # TODO get a shit ton of data and see if we can acomplish double descent???? (idek if thats possible here)
 
 # ====== Running Constants =======
-EPOCHS = 750
+EPOCHS = 5000
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
@@ -38,8 +38,8 @@ MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
-#HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
-HIDDEN_LAYERS = [512, 512, 256] #maybe add residuals
+HIDDEN_LAYERS = [2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
+#HIDDEN_LAYERS = [512, 512, 256] #maybe add residuals
 CRITERION = hetero_gaussian_nll_with_phi # paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
 BATCH_NORM = False
 DROPOUT = 0.0
@@ -58,7 +58,7 @@ TRACK_BEST_OVERLAP = False
 PLOT_OVERLAP_HISTORY = False
 
 # ====== Overlap tracking settings ======
-FAST_PREFIX = ""
+FAST_PREFIX = "LARGE"
 ACTUAL_PREFIX = "canonicalphi"
 OVERLAP_TARGET_INDEX = 3
 OVERLAP_MODEL_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_maxoverlapd0"
