@@ -168,28 +168,73 @@ def phi_wrapped_residuals(y_pred, y_true, phi_index):
     return residuals
 
 
-def get_overlap_plot_range(y_true, y_pred, target_index, target_name=None, axis_limits=None):
-    axis_limits = axis_limits or {}
+def _finite_values(values):
+    values = np.asarray(values)
+    return values[np.isfinite(values)]
 
-    true_vals = y_true[:, target_index]
-    pred_vals = y_pred[:, target_index]
 
-    vmin = min(true_vals.min(), pred_vals.min())
-    vmax = max(true_vals.max(), pred_vals.max())
+def _pad_range(vmin, vmax, pad_fraction=0.02):
+    if vmin == vmax:
+        return vmin - 0.5, vmax + 0.5
 
-    if target_name == "pca_c":
-        vmin, vmax = -0.1, 0.1
-    elif target_name == "pca_dxy":
-        vmin, vmax = -0.005, 0.005
+    pad = (vmax - vmin) * pad_fraction
+    return vmin - pad, vmax + pad
 
-    if target_name in axis_limits:
-        vmin, vmax = axis_limits[target_name]
+
+def _central_range(values, central_fraction=0.99):
+    values = _finite_values(values)
+
+    if len(values) == 0:
+        return -0.5, 0.5
+
+    central_fraction = float(central_fraction)
+    central_fraction = min(max(central_fraction, 0.0), 1.0)
+
+    if central_fraction >= 1.0:
+        return float(values.min()), float(values.max())
+
+    tail_fraction = (1.0 - central_fraction) / 2.0
+    vmin, vmax = np.quantile(values, [tail_fraction, 1.0 - tail_fraction])
+    return float(vmin), float(vmax)
+
+
+def _target_plot_values(y_true, y_pred, target_index):
+    true_vals = _finite_values(y_true[:, target_index])
+    pred_vals = _finite_values(y_pred[:, target_index])
+    return np.concatenate([true_vals, pred_vals])
+
+
+def _target_axis_range(y_true, y_pred, target_index, central_fraction=1.0, axis_limit=None, padded=True):
+    if axis_limit is not None:
+        vmin, vmax = axis_limit
+    else:
+        values = _target_plot_values(y_true, y_pred, target_index)
+        vmin, vmax = _central_range(values, central_fraction=central_fraction)
+
+    if padded:
+        return _pad_range(vmin, vmax)
 
     if vmin == vmax:
-        vmin -= 0.5
-        vmax += 0.5
+        return vmin - 0.5, vmax + 0.5
 
     return vmin, vmax
+
+
+def _finite_pair_mask(true_vals, pred_vals):
+    return np.isfinite(true_vals) & np.isfinite(pred_vals)
+
+
+def get_overlap_plot_range(y_true, y_pred, target_index, target_name=None, axis_limits=None):
+    axis_limits = axis_limits or {}
+    axis_limit = axis_limits.get(target_name)
+    return _target_axis_range(
+        y_true=y_true,
+        y_pred=y_pred,
+        target_index=target_index,
+        central_fraction=1.0,
+        axis_limit=axis_limit,
+        padded=False,
+    )
 
 
 def compute_target_histogram_overlap(
@@ -231,38 +276,48 @@ def plot_overlap_distributions(
     save_path=None,
     show=True,
     axis_limits=None,
+    central_fraction=0.99,
 ):
     n_targets = len(target_cols)
-    fig, axes = plt.subplots(1, n_targets, figsize=(5 * n_targets, 4))
-
-    if n_targets == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(2, n_targets, figsize=(5 * n_targets, 8))
+    axes = np.asarray(axes).reshape(2, n_targets)
 
     axis_limits = axis_limits or {}
+    rows = [
+        ("All finite data", 1.0),
+        (f"Central {central_fraction * 100:.0f}%", central_fraction),
+    ]
 
-    for i, name in enumerate(target_cols):
-        ax = axes[i]
+    for row_idx, (row_label, row_fraction) in enumerate(rows):
+        for i, name in enumerate(target_cols):
+            ax = axes[row_idx, i]
 
-        true_vals = y_true[:, i]
-        pred_vals = y_pred[:, i]
+            true_vals = _finite_values(y_true[:, i])
+            pred_vals = _finite_values(y_pred[:, i])
+            axis_limit = axis_limits.get(name)
+            vmin, vmax = _target_axis_range(
+                y_true=y_true,
+                y_pred=y_pred,
+                target_index=i,
+                central_fraction=row_fraction,
+                axis_limit=axis_limit,
+                padded=False,
+            )
 
-        vmin, vmax = get_overlap_plot_range(
-            y_true=y_true,
-            y_pred=y_pred,
-            target_index=i,
-            target_name=name,
-            axis_limits=axis_limits,
-        )
+            if row_fraction < 1.0:
+                true_vals = true_vals[(true_vals >= vmin) & (true_vals <= vmax)]
+                pred_vals = pred_vals[(pred_vals >= vmin) & (pred_vals <= vmax)]
 
-        bin_edges = np.linspace(vmin, vmax, bins + 1)
+            bin_edges = np.linspace(vmin, vmax, bins + 1)
 
-        ax.hist(true_vals, bins=bin_edges, alpha=0.5, label="Actual", density=density)
-        ax.hist(pred_vals, bins=bin_edges, alpha=0.5, label="Predicted", density=density)
+            ax.hist(true_vals, bins=bin_edges, alpha=0.5, label="Actual", density=density)
+            ax.hist(pred_vals, bins=bin_edges, alpha=0.5, label="Predicted", density=density)
 
-        ax.set_title(name)
-        ax.set_xlabel("Value")
-        ax.set_ylabel("Density" if density else "Count")
-        ax.legend()
+            ax.set_xlim(*_pad_range(vmin, vmax))
+            ax.set_title(f"{name} - {row_label}")
+            ax.set_xlabel("Value")
+            ax.set_ylabel("Density" if density else "Count")
+            ax.legend()
 
     plt.tight_layout()
 
@@ -288,45 +343,60 @@ def plot_pred_vs_true_scatter(
     show=True,
     max_points=5000,
     seed=42,
+    central_fraction=0.99,
 ):
     n_targets = len(target_cols)
-    fig, axes = plt.subplots(1, n_targets, figsize=(5 * n_targets, 4))
-
-    if n_targets == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(2, n_targets, figsize=(5 * n_targets, 8))
+    axes = np.asarray(axes).reshape(2, n_targets)
 
     n_rows = len(y_true)
-    if n_rows > max_points:
+    if max_points is not None and n_rows > max_points:
         rng = np.random.default_rng(seed=seed)
         plot_idx = rng.choice(n_rows, size=max_points, replace=False)
     else:
         plot_idx = np.arange(n_rows)
 
-    for i, name in enumerate(target_cols):
-        ax = axes[i]
-        true_vals = y_true[plot_idx, i]
-        pred_vals = y_pred[plot_idx, i]
+    rows = [
+        ("All finite data", 1.0),
+        (f"Central {central_fraction * 100:.0f}%", central_fraction),
+    ]
 
-        vmin = min(true_vals.min(), pred_vals.min())
-        vmax = max(true_vals.max(), pred_vals.max())
-        
-        if vmin == vmax:
-            vmin -= 0.5
-            vmax += 0.5
-            
-        if name == "pca_dxy":
-            vmin, vmax = -0.005, 0.005
-            ax.set_xlim(vmin, vmax)
-            ax.set_ylim(vmin, vmax)
-        else:
-            ax.set_xlim(vmin, vmax)
-            ax.set_ylim(vmin, vmax)
-            
-        ax.scatter(true_vals, pred_vals, s=5, alpha=0.25, linewidths=0)
-        ax.plot([vmin, vmax], [vmin, vmax], color="black", linewidth=1.0)
-        ax.set_title(name)
-        ax.set_xlabel("Actual")
-        ax.set_ylabel("Predicted")
+    for row_idx, (row_label, row_fraction) in enumerate(rows):
+        for i, name in enumerate(target_cols):
+            ax = axes[row_idx, i]
+            true_vals = y_true[plot_idx, i]
+            pred_vals = y_pred[plot_idx, i]
+            pair_mask = _finite_pair_mask(true_vals, pred_vals)
+            true_vals = true_vals[pair_mask]
+            pred_vals = pred_vals[pair_mask]
+
+            vmin, vmax = _target_axis_range(
+                y_true=y_true,
+                y_pred=y_pred,
+                target_index=i,
+                central_fraction=row_fraction,
+                padded=False,
+            )
+
+            if row_fraction < 1.0:
+                central_mask = (
+                    (true_vals >= vmin)
+                    & (true_vals <= vmax)
+                    & (pred_vals >= vmin)
+                    & (pred_vals <= vmax)
+                )
+                true_vals = true_vals[central_mask]
+                pred_vals = pred_vals[central_mask]
+
+            x_min, x_max = _pad_range(vmin, vmax)
+            ax.set_xlim(x_min, x_max)
+            ax.set_ylim(x_min, x_max)
+
+            ax.scatter(true_vals, pred_vals, s=5, alpha=0.25, linewidths=0)
+            ax.plot([vmin, vmax], [vmin, vmax], color="black", linewidth=1.0)
+            ax.set_title(f"{name} - {row_label}")
+            ax.set_xlabel("Actual")
+            ax.set_ylabel("Predicted")
 
     plt.tight_layout()
 
@@ -499,6 +569,7 @@ def make_val_diagnostic_plots(
     show=False,
     axis_limits=None,
     scatter_max_points=5000,
+    central_fraction=0.99,
 ):
     y_pred, y_true, y_sigma = collect_val_predictions_targets_and_sigma(
         model=model,
@@ -529,6 +600,7 @@ def make_val_diagnostic_plots(
         save_path=paths["overlap"],
         show=show,
         axis_limits=axis_limits,
+        central_fraction=central_fraction,
     )
 
     plot_pred_vs_true_scatter(
@@ -538,6 +610,7 @@ def make_val_diagnostic_plots(
         save_path=paths["scatter"],
         show=show,
         max_points=scatter_max_points,
+        central_fraction=central_fraction,
     )
 
     if y_sigma is not None:

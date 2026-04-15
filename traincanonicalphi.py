@@ -28,6 +28,8 @@ from helpers_vis import (
 )
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent???? (idek if thats possible here)
+# TODO stop training models over and over learn to reuse what you have!
+
 
 # ====== Running Constants =======
 EPOCHS = 100
@@ -70,6 +72,8 @@ GOLDEN_MODEL_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_goldenmodels"
 GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}{ACTUAL_PREFIX}_goldeniteration.txt"
 PLOT_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_plots"
 PLOT_PREFIX = f"{FAST_PREFIX}{ACTUAL_PREFIX}_relative_loss_hetero"
+DIAGNOSTIC_CENTRAL_FRACTION = 0.99
+DIAGNOSTIC_SCATTER_MAX_POINTS = None
 
 # ===== Picking Device ========
 '''
@@ -480,6 +484,8 @@ if TRAIN:
                     bins=100,
                     density=True,
                     show=False,
+                    scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
+                    central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
                 )
 
                 os.makedirs(PLOT_DIR, exist_ok=True)
@@ -564,7 +570,9 @@ if PLOT_VAL_DISTRIBUTIONS:
         prefix=PLOT_PREFIX,
         bins=100,
         density=True,
-        show=True
+        show=True,
+        scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
+        central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
     )
     print("========== Saved validation diagnostic plots: ==========")
     for plot_name, plot_path in plot_paths.items():

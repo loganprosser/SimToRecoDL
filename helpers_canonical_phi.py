@@ -371,6 +371,7 @@ def make_canonical_val_diagnostic_plots(
     show=False,
     axis_limits=None,
     scatter_max_points=5000,
+    central_fraction=0.99,
 ):
     import os
 
@@ -403,6 +404,7 @@ def make_canonical_val_diagnostic_plots(
         save_path=paths["overlap"],
         show=show,
         axis_limits=axis_limits,
+        central_fraction=central_fraction,
     )
 
     plot_pred_vs_true_scatter(
@@ -412,6 +414,7 @@ def make_canonical_val_diagnostic_plots(
         save_path=paths["scatter"],
         show=show,
         max_points=scatter_max_points,
+        central_fraction=central_fraction,
     )
 
     if y_sigma is not None:
