@@ -79,6 +79,7 @@ def load_track_data(
     n_layers=6,
     sentinel_value=-999.0,
     sentinel_replacement=0.0,
+    print_mask_counts=False,
 ):
     if device is None:
         device = torch.device("cpu")
@@ -91,7 +92,43 @@ def load_track_data(
     x = df[feature_cols].to_numpy(dtype=np.float32)
     y = df[target_cols].to_numpy(dtype=np.float32)
 
-    x[x == sentinel_value] = sentinel_replacement
+    sentinel_mask = x == sentinel_value
+    sentinel_count = int(sentinel_mask.sum())
+
+    if print_mask_counts:
+        mask_cols = [col for col in feature_cols if col.endswith("_mask")]
+        print("========== Raw mask/sentinel data check ==========")
+        print(f"Rows loaded: {len(df):,}")
+        print(f"Feature columns: {len(feature_cols):,}")
+        print(f"Mask columns found: {len(mask_cols):,}")
+
+        if mask_cols:
+            mask_values = df[mask_cols].to_numpy(dtype=np.float32)
+            present_hits = int((mask_values == 1).sum())
+            missing_hits = int((mask_values == 0).sum())
+            other_mask_values = int(mask_values.size - present_hits - missing_hits)
+
+            print(f"Mask entries total: {mask_values.size:,}")
+            print(f"Mask entries == 1: {present_hits:,}")
+            print(f"Mask entries == 0: {missing_hits:,}")
+            print(f"Mask entries other: {other_mask_values:,}")
+
+            for col in mask_cols:
+                values = df[col].to_numpy(dtype=np.float32)
+                print(
+                    f"  {col}: ones={int((values == 1).sum()):,}, "
+                    f"zeros={int((values == 0).sum()):,}"
+                )
+        else:
+            print("No *_mask feature columns found.")
+
+        print(
+            f"Sentinel values ({sentinel_value}) replaced with "
+            f"{sentinel_replacement}: {sentinel_count:,}"
+        )
+        print("==================================================")
+
+    x[sentinel_mask] = sentinel_replacement
 
     n_rows = len(x)
     n_val = int(n_rows * val_fraction)

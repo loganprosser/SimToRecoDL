@@ -6,10 +6,16 @@ import numpy as np
 
 from model import HeteroTrackNet
 from loss import paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
-from helpers_data import load_track_data, print_data_shapes, set_seed
+from helpers_data import set_seed
+from helpers_canonical_phi import (
+    denormalize_and_recover_phi,
+    load_canonical_phi_track_data,
+    make_canonical_val_diagnostic_plots,
+    print_canonical_data_shapes,
+    print_canonical_final_validation_samples,
+)
 from helpers import (
         wrapped_angle_diff,
-        denormalize_targets,
         format_epoch_report,
         save_golden_model,
         save_model_checkpoint,
@@ -18,9 +24,7 @@ from helpers import (
 from helpers_vis import (
     compute_target_histogram_overlap,
     make_training_history_plots,
-    make_val_diagnostic_plots,
     plot_overlap_history,
-    print_final_validation_samples,
 )
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent???? (idek if thats possible here)
@@ -54,15 +58,15 @@ PLOT_OVERLAP_HISTORY = True
 # ====== Overlap tracking settings ======
 FAST_PREFIX = 4
 OVERLAP_TARGET_INDEX = 3
-OVERLAP_MODEL_DIR = f"{FAST_PREFIX}maxoverlapd0"
+OVERLAP_MODEL_DIR = f"{FAST_PREFIX}canonicalphi_maxoverlapd0"
 
 #1: [5x .25] 2: [5x 1.0] 3: [0,0,0,.5,.1]
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = f"{FAST_PREFIX}goldenmodels"
-GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}goldeniteration.txt"
-PLOT_DIR = f"{FAST_PREFIX}plots"
-PLOT_PREFIX = f"{FAST_PREFIX}relative_loss_hetero"
+GOLDEN_MODEL_DIR = f"{FAST_PREFIX}canonicalphi_goldenmodels"
+GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}canonicalphi_goldeniteration.txt"
+PLOT_DIR = f"{FAST_PREFIX}canonicalphi_plots"
+PLOT_PREFIX = f"{FAST_PREFIX}canonicalphi_relative_loss_hetero"
 
 # ===== Picking Device ========
 '''
@@ -87,8 +91,8 @@ SEED = 42
 set_seed(SEED)
 
 
-# ====== Load and prepare data =======
-data = load_track_data(
+# ====== Load and prepare canonical-phi data =======
+data = load_canonical_phi_track_data(
     batch_size=BATCH_SIZE,
     seed=SEED,
     device=device,
@@ -110,13 +114,14 @@ y_std_t = data.y_std_t
 FEATURE_COLS = data.feature_cols
 TARGET_COLS = data.target_cols
 PHI_INDEX = data.phi_index
+ROTATION_SOURCE = data.rotation_source
 
 if not 0 <= OVERLAP_TARGET_INDEX < len(TARGET_COLS):
     raise ValueError(f"OVERLAP_TARGET_INDEX must be in [0, {len(TARGET_COLS) - 1}]")
 
 # ====== CHECK SHAPES ======
 if CHECK_SHAPE:
-    print_data_shapes(data)
+    print_canonical_data_shapes(data)
 
 
 # ===== Training ======
@@ -145,7 +150,7 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_mi
 
 # ====== trial forward pass ======
 if TEST_TRAIN:
-    xb, yb = next(iter(train_loader))
+    xb, yb, rb = next(iter(train_loader))
     xb, yb = xb.to(device), yb.to(device)
 
     mu, logvar = model(xb)
@@ -206,6 +211,9 @@ def build_checkpoint_metadata(report_text=None):
         "mean_weights": MEAN_WEIGHTS.tolist() if MEAN_WEIGHTS is not None else None,
         "overlap_target_index": OVERLAP_TARGET_INDEX,
         "overlap_target_name": TARGET_COLS[OVERLAP_TARGET_INDEX],
+        "canonical_phi": True,
+        "canonical_rotation_source": ROTATION_SOURCE,
+        "canonical_rotation_sign": "inputs_xy_and_target_phi_minus_rotation",
     }
 
     if report_text is not None:
@@ -242,7 +250,7 @@ if TRAIN:
         model.train()
         train_loss = 0.0
 
-        for xb, yb in train_loader:
+        for xb, yb, rb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
 
             optimizer.zero_grad()
@@ -274,8 +282,8 @@ if TRAIN:
         overlap_true_parts = []
 
         with torch.no_grad():
-            for xb, yb in val_loader:
-                xb, yb = xb.to(device), yb.to(device)
+            for xb, yb, rb in val_loader:
+                xb, yb, rb = xb.to(device), yb.to(device), rb.to(device)
 
                 mu, logvar = model(xb)
 
@@ -289,8 +297,20 @@ if TRAIN:
                 )
                 val_loss += loss.item() * xb.size(0)
 
-                mu_phys = denormalize_targets(mu, y_mean_t, y_std_t)
-                yb_phys = denormalize_targets(yb, y_mean_t, y_std_t)
+                mu_phys = denormalize_and_recover_phi(
+                    mu,
+                    rb,
+                    y_mean_t,
+                    y_std_t,
+                    PHI_INDEX,
+                )
+                yb_phys = denormalize_and_recover_phi(
+                    yb,
+                    rb,
+                    y_mean_t,
+                    y_std_t,
+                    PHI_INDEX,
+                )
 
                 diff = mu_phys - yb_phys
 
@@ -444,7 +464,7 @@ if TRAIN:
                     metadata=metadata,
                 )
 
-                overlap_plot_paths = make_val_diagnostic_plots(
+                overlap_plot_paths = make_canonical_val_diagnostic_plots(
                     model=model,
                     val_loader=val_loader,
                     device=device,
@@ -491,7 +511,7 @@ if TRAIN:
         write_final_golden_summary(GOLDEN_SUMMARY_FILE, best_reports, best_vals)
 
 if PRINT_FINAL_VAL_SAMPLES:
-    print_final_validation_samples(
+    print_canonical_final_validation_samples(
         model, val_loader, device,
         y_mean_t, y_std_t,
         TARGET_COLS, PHI_INDEX,
@@ -529,7 +549,7 @@ if PLOT_OVERLAP_HISTORY:
         print("Skipping overlap history plot because no epochs were recorded.")
             
 if PLOT_VAL_DISTRIBUTIONS:
-    plot_paths = make_val_diagnostic_plots(
+    plot_paths = make_canonical_val_diagnostic_plots(
         model=model,
         val_loader=val_loader,
         device=device,

@@ -18,34 +18,33 @@ from helpers_vis import (
     plot_overlap_history,
     print_final_validation_samples,
 )
-from loss import hetero_gaussian_nll_with_phi, hetero_huber_corr_loss
-from model import HeteroTrackNet
-
-# TODO maybe use another togglable filter becasue overlap can be bias include like a density matching penality instead of straight overlap
-
+from loss import huber_loss_with_phi
+from model import SimpleTrackNet
 
 
 # ====== Running Constants =======
-EPOCHS = 500
+EPOCHS = 300
 BATCH_SIZE = 256
-HIDDEN_LAYERS = [1024, 1024, 512]
+HIDDEN_LAYERS = [256, 128, 64]
+DROPOUT = 0.00
+BATCH_NORM = False
 TARGET_COLS = ["pca_dxy"]
-CRITERION = hetero_huber_corr_loss
+CRITERION = huber_loss_with_phi
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
 TEST_TRAIN = False
 TRAIN = True
 PRINT_FINAL_VAL_SAMPLES = True
-SAVE_BEST_MODELS = False
+SAVE_BEST_MODELS = True
 PLOT_VAL_DISTRIBUTIONS = True
 PLOT_TRAINING_HISTORY = True
-PLOT_OVERLAP_HISTORY = False
+PLOT_OVERLAP_HISTORY = True
 
-
-SAVE_DIR = "solomodelsHUBER"
-PLOT_DIR = "plotsSOLOHUBER"
-PLOT_PREFIX = "huber_solo_pca_dxy"
+# ====== Save settings ======
+SAVE_DIR = "musolomodelsHUBER"
+PLOT_DIR = "plotsMUSOLOHUBER"
+PLOT_PREFIX = "huber_mu_solo_pca_dxy"
 OVERLAP_TARGET_INDEX = 0
 
 # ===== Picking Device ========
@@ -93,12 +92,12 @@ if CHECK_SHAPE:
 input_dim = X_train.shape[1]
 output_dim = len(TARGET_COLS)
 
-model = HeteroTrackNet(
+model = SimpleTrackNet(
     input_dim=input_dim,
     hidden_layers=HIDDEN_LAYERS,
     output_dim=output_dim,
-    use_batchnorm=True,
-    dropout=0.10,
+    use_batchnorm=BATCH_NORM,
+    dropout=DROPOUT,
     activation=nn.ReLU,
 )
 model.to(device)
@@ -112,7 +111,7 @@ def build_checkpoint_metadata(report_text=None):
     metadata = {
         "target_cols": TARGET_COLS,
         "feature_cols": FEATURE_COLS,
-        "model_type": "HeteroTrackNet",
+        "model_type": "SimpleTrackNet",
         "input_dim": input_dim,
         "output_dim": output_dim,
         "y_mean": y_mean,
@@ -120,8 +119,8 @@ def build_checkpoint_metadata(report_text=None):
         "x_mean": x_mean,
         "x_std": x_std,
         "hidden_layers": HIDDEN_LAYERS,
-        "use_batchnorm": True,
-        "dropout": 0.10,
+        "use_batchnorm": BATCH_NORM,
+        "dropout": DROPOUT,
         "activation": "ReLU",
         "batch_size": BATCH_SIZE,
         "seed": SEED,
@@ -129,6 +128,7 @@ def build_checkpoint_metadata(report_text=None):
         "criterion": CRITERION.__name__,
         "overlap_target_index": OVERLAP_TARGET_INDEX,
         "overlap_target_name": TARGET_COLS[OVERLAP_TARGET_INDEX],
+        "predicts_logvar": False,
     }
 
     if report_text is not None:
@@ -195,13 +195,12 @@ if TEST_TRAIN:
     xb, yb = next(iter(train_loader))
     xb, yb = xb.to(device), yb.to(device)
 
-    mu, logvar = model(xb)
+    pred = model(xb)
 
-    print("mu shape:", mu.shape)
-    print("logvar shape:", logvar.shape)
+    print("pred shape:", pred.shape)
     print("target shape:", yb.shape)
 
-    loss = CRITERION(yb, mu, logvar, phi_index=PHI_INDEX)
+    loss = CRITERION(yb, pred, phi_index=PHI_INDEX)
     print("initial loss:", loss.item())
 
 
@@ -239,8 +238,8 @@ if TRAIN:
 
             optimizer.zero_grad()
 
-            mu, logvar = model(xb)
-            loss = CRITERION(yb, mu, logvar, phi_index=PHI_INDEX)
+            pred = model(xb)
+            loss = CRITERION(yb, pred, phi_index=PHI_INDEX)
 
             loss.backward()
             optimizer.step()
@@ -257,26 +256,30 @@ if TRAIN:
         total_count = 0
         overlap_pred_parts = []
         overlap_true_parts = []
+        val_pred_norm_parts = []
+        val_true_norm_parts = []
 
         with torch.no_grad():
             for xb, yb in val_loader:
                 xb, yb = xb.to(device), yb.to(device)
 
-                mu, logvar = model(xb)
-                loss = CRITERION(yb, mu, logvar, phi_index=PHI_INDEX)
+                pred = model(xb)
+                loss = CRITERION(yb, pred, phi_index=PHI_INDEX)
                 val_loss += loss.item() * xb.size(0)
 
-                mu_phys = denormalize_targets(mu, y_mean_t, y_std_t)
+                pred_phys = denormalize_targets(pred, y_mean_t, y_std_t)
                 yb_phys = denormalize_targets(yb, y_mean_t, y_std_t)
 
-                diff = mu_phys - yb_phys
+                diff = pred_phys - yb_phys
 
                 total_val_mae += diff.abs().sum(dim=0)
                 total_val_sq += (diff ** 2).sum(dim=0)
                 total_count += xb.size(0)
 
-                overlap_pred_parts.append(mu_phys.detach().cpu())
+                overlap_pred_parts.append(pred_phys.detach().cpu())
                 overlap_true_parts.append(yb_phys.detach().cpu())
+                val_pred_norm_parts.append(pred.detach().cpu())
+                val_true_norm_parts.append(yb.detach().cpu())
 
         val_loss /= len(val_loader.dataset)
 
@@ -289,6 +292,8 @@ if TRAIN:
 
         overlap_pred = torch.cat(overlap_pred_parts, dim=0).numpy()
         overlap_true = torch.cat(overlap_true_parts, dim=0).numpy()
+        val_pred_norm = torch.cat(val_pred_norm_parts, dim=0)
+        val_true_norm = torch.cat(val_true_norm_parts, dim=0)
         target_overlap = compute_target_histogram_overlap(
             y_true=overlap_true,
             y_pred=overlap_pred,
@@ -326,6 +331,13 @@ if TRAIN:
 
         print(report)
         print(overlap_report)
+        print("   Normalized validation std pred vs true:")
+        for i, name in enumerate(TARGET_COLS):
+            print(
+                f"      {name}: "
+                f"{val_pred_norm[:, i].std().item():.6f}, "
+                f"{val_true_norm[:, i].std().item():.6f}"
+            )
 
         if SAVE_BEST_MODELS:
             if val_loss < best_vals["best_val_loss"]:

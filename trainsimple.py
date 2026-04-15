@@ -13,21 +13,21 @@ from helpers_vis import (
 )
 
 # ===== Constants ======
-EPOCHS = 100
-HIDDEN_LAYERS = [512, 512, 128]
+EPOCHS = 750
+HIDDEN_LAYERS = [256, 256, 128]
 USE_BATCHNORM = False
 DROPOUT = 0.0
 SAVE_DIR = "modelsimple"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 MODEL_PATH = os.path.join(SAVE_DIR, "simple_tracknet.pt")
-PLOT_DIR = "plots"
 
 # ====== Running flags ======
 PRINT_FINAL_VAL_SAMPLES = False # not working need sigma for the funciton
-SAVE_MODEL = True
+SAVE_MODEL = False
 PLOT_TRAINING_HISTORY = True
-
+SAVE_PLOTS = True
+PLOT_DIR = "plots"
 
 # ===== Picking Device ========
 device = torch.device(
@@ -253,8 +253,6 @@ if SAVE_MODEL:
     print(f"Model saved to {MODEL_PATH}")
     
 # ====== SAVE VALIDATION DISTRIBUTION PLOTS ======
-SAVE_PLOTS = True
-
 if SAVE_PLOTS:
     plot_paths = make_val_diagnostic_plots(
         model=model,
