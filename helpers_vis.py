@@ -267,6 +267,170 @@ def compute_target_histogram_overlap(
     return float(overlap)
 
 
+def _safe_std(values):
+    if len(values) < 2:
+        return 0.0
+    return float(np.std(values))
+
+
+def compute_target_scatter_linearity(
+    y_true,
+    y_pred,
+    target_index,
+):
+    true_vals = y_true[:, target_index]
+    pred_vals = y_pred[:, target_index]
+    mask = _finite_pair_mask(true_vals, pred_vals)
+    true_vals = true_vals[mask]
+    pred_vals = pred_vals[mask]
+
+    if len(true_vals) < 3:
+        return {
+            "score": -float("inf"),
+            "corr": 0.0,
+            "slope": 0.0,
+            "intercept": 0.0,
+            "slope_penalty": float("inf"),
+            "intercept_penalty": float("inf"),
+            "n": int(len(true_vals)),
+        }
+
+    true_std = _safe_std(true_vals)
+    pred_std = _safe_std(pred_vals)
+
+    if true_std == 0.0 or pred_std == 0.0:
+        corr = 0.0
+        slope = 0.0
+    else:
+        corr = float(np.corrcoef(true_vals, pred_vals)[0, 1])
+        slope = float(np.cov(true_vals, pred_vals, ddof=0)[0, 1] / (true_std ** 2))
+
+    intercept = float(pred_vals.mean() - slope * true_vals.mean())
+    value_scale = max(true_std, pred_std, 1e-12)
+    slope_penalty = abs(np.log(max(abs(slope), 1e-12)))
+    intercept_penalty = abs(intercept) / value_scale
+
+    score = corr - 0.20 * slope_penalty - 0.10 * intercept_penalty
+
+    return {
+        "score": float(score),
+        "corr": float(corr),
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "slope_penalty": float(slope_penalty),
+        "intercept_penalty": float(intercept_penalty),
+        "n": int(len(true_vals)),
+    }
+
+
+def compute_target_overlap_coverage(
+    y_true,
+    y_pred,
+    target_index,
+    target_cols,
+    bins=100,
+    axis_limits=None,
+):
+    target_name = target_cols[target_index]
+    true_vals = _finite_values(y_true[:, target_index])
+    pred_vals = _finite_values(y_pred[:, target_index])
+
+    if len(true_vals) < 3 or len(pred_vals) < 3:
+        return {
+            "score": -float("inf"),
+            "overlap": 0.0,
+            "mean_penalty": float("inf"),
+            "std_penalty": float("inf"),
+            "spread_penalty": float("inf"),
+            "n_true": int(len(true_vals)),
+            "n_pred": int(len(pred_vals)),
+        }
+
+    overlap = compute_target_histogram_overlap(
+        y_true=y_true,
+        y_pred=y_pred,
+        target_index=target_index,
+        target_cols=target_cols,
+        bins=bins,
+        axis_limits=axis_limits,
+    )
+
+    true_std = max(_safe_std(true_vals), 1e-12)
+    pred_std = max(_safe_std(pred_vals), 1e-12)
+    mean_penalty = abs(float(pred_vals.mean() - true_vals.mean())) / true_std
+    std_penalty = abs(np.log(pred_std / true_std))
+
+    true_q_low, true_q_high = np.quantile(true_vals, [0.005, 0.995])
+    pred_q_low, pred_q_high = np.quantile(pred_vals, [0.005, 0.995])
+    true_spread = max(float(true_q_high - true_q_low), 1e-12)
+    pred_spread = max(float(pred_q_high - pred_q_low), 1e-12)
+    spread_penalty = abs(np.log(pred_spread / true_spread))
+
+    score = overlap - 0.10 * mean_penalty - 0.20 * std_penalty - 0.20 * spread_penalty
+
+    return {
+        "score": float(score),
+        "overlap": float(overlap),
+        "mean_penalty": float(mean_penalty),
+        "std_penalty": float(std_penalty),
+        "spread_penalty": float(spread_penalty),
+        "n_true": int(len(true_vals)),
+        "n_pred": int(len(pred_vals)),
+    }
+
+
+def compute_plot_quality_scores(
+    y_true,
+    y_pred,
+    target_cols,
+    bins=100,
+    axis_limits=None,
+):
+    scores = {
+        "scatter": {},
+        "overlap": {},
+    }
+
+    for i, name in enumerate(target_cols):
+        scores["scatter"][name] = compute_target_scatter_linearity(
+            y_true=y_true,
+            y_pred=y_pred,
+            target_index=i,
+        )
+        scores["overlap"][name] = compute_target_overlap_coverage(
+            y_true=y_true,
+            y_pred=y_pred,
+            target_index=i,
+            target_cols=target_cols,
+            bins=bins,
+            axis_limits=axis_limits,
+        )
+
+    return scores
+
+
+def format_plot_quality_report(scores):
+    lines = ["   Plot-quality scores:"]
+
+    lines.append("      Scatter linearity:")
+    for name, metric in scores["scatter"].items():
+        lines.append(
+            f"         {name}: score={metric['score']:.6f} | "
+            f"corr={metric['corr']:.6f} | slope={metric['slope']:.6f} | "
+            f"intercept_penalty={metric['intercept_penalty']:.6f}"
+        )
+
+    lines.append("      Overlap coverage:")
+    for name, metric in scores["overlap"].items():
+        lines.append(
+            f"         {name}: score={metric['score']:.6f} | "
+            f"overlap={metric['overlap']:.6f} | mean_pen={metric['mean_penalty']:.6f} | "
+            f"std_pen={metric['std_penalty']:.6f} | spread_pen={metric['spread_penalty']:.6f}"
+        )
+
+    return "\n".join(lines)
+
+
 def plot_overlap_distributions(
     y_true,
     y_pred,
