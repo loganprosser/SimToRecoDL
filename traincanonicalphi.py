@@ -48,7 +48,6 @@ CRITERION = hetero_gaussian_nll_with_phi # paper_hetero_loss, hetero_gaussian_nl
 BATCH_NORM = False
 DROPOUT = 0.0
 
-
 # ====== Running Flags =======
 CHECK_SHAPE = False
 CHECK_MASK_COUNTS = False # counts if masks are real
@@ -424,23 +423,6 @@ if TRAIN:
                 )
                 best_reports[name] = full_report
 
-                golden_plot_paths = make_canonical_val_diagnostic_plots(
-                    model=model,
-                    val_loader=val_loader,
-                    device=device,
-                    y_mean_t=y_mean_t,
-                    y_std_t=y_std_t,
-                    target_cols=TARGET_COLS,
-                    phi_index=PHI_INDEX,
-                    output_dir=PLOT_DIR,
-                    prefix=name,
-                    bins=100,
-                    density=True,
-                    show=False,
-                    scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
-                    central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
-                )
-
                 report_path = os.path.join(PLOT_DIR, f"{name}_training_report.txt")
                 os.makedirs(PLOT_DIR, exist_ok=True)
                 with open(report_path, "w") as f:
@@ -454,10 +436,9 @@ if TRAIN:
                     f.write("\n")
 
                 print(f"   New golden plot-quality model: {name} = {float(value):.6f} at epoch {epoch + 1}")
+                print(f"   Saved golden checkpoint: {os.path.join(GOLDEN_MODEL_DIR, f'{name}.pt')}")
                 print(f"   Saved golden report: {report_path}")
-                print("   Saved golden plots:")
-                for plot_name, plot_path in golden_plot_paths.items():
-                    print(f"      {plot_name}: {plot_path}")
+                print("   Golden plots will be generated after training finishes.")
 
             for target_name in TARGET_COLS:
                 scatter_tag = f"best_scatter_linear_{target_name}"
@@ -555,6 +536,52 @@ if TRAIN:
                     print(f"      {plot_name}: {plot_path}")
 
         scheduler.step()
+
+    # ===== generate golden plots once at the end =====
+    if TRACK_GOLDEN:
+        final_model_state = {
+            key: value.detach().clone()
+            for key, value in model.state_dict().items()
+        }
+
+        def load_golden_checkpoint(path):
+            try:
+                return torch.load(path, map_location=device, weights_only=False)
+            except TypeError:
+                return torch.load(path, map_location=device)
+
+        print("========== Generating final golden model plots: ==========")
+        for metric_name in best_reports:
+            checkpoint_path = os.path.join(GOLDEN_MODEL_DIR, f"{metric_name}.pt")
+            if not os.path.exists(checkpoint_path):
+                print(f"  Skipping {metric_name}: missing checkpoint {checkpoint_path}")
+                continue
+
+            checkpoint = load_golden_checkpoint(checkpoint_path)
+            model.load_state_dict(checkpoint["model_state_dict"])
+
+            golden_plot_paths = make_canonical_val_diagnostic_plots(
+                model=model,
+                val_loader=val_loader,
+                device=device,
+                y_mean_t=y_mean_t,
+                y_std_t=y_std_t,
+                target_cols=TARGET_COLS,
+                phi_index=PHI_INDEX,
+                output_dir=PLOT_DIR,
+                prefix=metric_name,
+                bins=100,
+                density=True,
+                show=False,
+                scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
+                central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
+            )
+
+            print(f"  {metric_name}:")
+            for plot_name, plot_path in golden_plot_paths.items():
+                print(f"      {plot_name}: {plot_path}")
+
+        model.load_state_dict(final_model_state)
 
     # ===== write FINAL summary ONLY ONCE =====
     if TRACK_GOLDEN:
