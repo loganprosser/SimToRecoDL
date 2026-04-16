@@ -75,6 +75,10 @@ PLOT_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_plots"
 PLOT_PREFIX = f"{FAST_PREFIX}{ACTUAL_PREFIX}_relative_loss_hetero"
 DIAGNOSTIC_CENTRAL_FRACTION = 0.99
 DIAGNOSTIC_SCATTER_MAX_POINTS = None
+GOLDEN_SCATTER_PREFIX = "best_scatter_linear_"
+GOLDEN_OVERLAP_PREFIX = "best_overlap_cover_"
+PRINT_FULL_EPOCH_REPORT = False
+PRINT_GOLDEN_UPDATE_DETAILS = False
 
 # ===== Picking Device ========
 '''
@@ -228,6 +232,17 @@ def build_checkpoint_metadata(report_text=None):
         metadata["report_text"] = report_text
 
     return metadata
+
+
+def get_golden_plot_location(metric_name):
+    for metric_prefix in (GOLDEN_SCATTER_PREFIX, GOLDEN_OVERLAP_PREFIX):
+        if metric_name.startswith(metric_prefix):
+            target_name = metric_name[len(metric_prefix):]
+            file_prefix = metric_prefix.rstrip("_")
+            return os.path.join(PLOT_DIR, target_name), file_prefix
+
+    return PLOT_DIR, metric_name
+
 
 if TRAIN:
 
@@ -393,9 +408,12 @@ if TRAIN:
         )
         plot_quality_report = format_plot_quality_report(plot_quality_scores)
 
-        print(report)
-        print(overlap_report)
-        print(plot_quality_report)
+        if PRINT_FULL_EPOCH_REPORT:
+            print(report)
+            print(overlap_report)
+            print(plot_quality_report)
+
+        golden_updates = []
 
         # ===== GOLDEN TRACKING =====
         if TRACK_GOLDEN:
@@ -423,8 +441,9 @@ if TRAIN:
                 )
                 best_reports[name] = full_report
 
-                report_path = os.path.join(PLOT_DIR, f"{name}_training_report.txt")
-                os.makedirs(PLOT_DIR, exist_ok=True)
+                golden_output_dir, golden_file_prefix = get_golden_plot_location(name)
+                report_path = os.path.join(golden_output_dir, f"{golden_file_prefix}_training_report.txt")
+                os.makedirs(golden_output_dir, exist_ok=True)
                 with open(report_path, "w") as f:
                     f.write("GOLDEN PLOT-QUALITY TRAINING REPORT\n")
                     f.write("=" * 80 + "\n")
@@ -435,25 +454,41 @@ if TRAIN:
                     f.write(full_report)
                     f.write("\n")
 
-                print(f"   New golden plot-quality model: {name} = {float(value):.6f} at epoch {epoch + 1}")
-                print(f"   Saved golden checkpoint: {os.path.join(GOLDEN_MODEL_DIR, f'{name}.pt')}")
-                print(f"   Saved golden report: {report_path}")
-                print("   Golden plots will be generated after training finishes.")
+                golden_updates.append(f"{name}={float(value):.6f}")
+                if PRINT_GOLDEN_UPDATE_DETAILS:
+                    print(f"   New golden plot-quality model: {name} = {float(value):.6f} at epoch {epoch + 1}")
+                    print(f"   Saved golden checkpoint: {os.path.join(GOLDEN_MODEL_DIR, f'{name}.pt')}")
+                    print(f"   Saved golden report: {report_path}")
+                    print("   Golden plots will be generated after training finishes.")
 
             for target_name in TARGET_COLS:
-                scatter_tag = f"best_scatter_linear_{target_name}"
+                scatter_tag = f"{GOLDEN_SCATTER_PREFIX}{target_name}"
                 scatter_metric = plot_quality_scores["scatter"][target_name]
                 scatter_score = scatter_metric["score"]
                 if scatter_score > best_vals[scatter_tag]:
                     best_vals[scatter_tag] = scatter_score
                     save(scatter_tag, scatter_score, scatter_metric)
 
-                overlap_tag = f"best_overlap_cover_{target_name}"
+                overlap_tag = f"{GOLDEN_OVERLAP_PREFIX}{target_name}"
                 overlap_metric = plot_quality_scores["overlap"][target_name]
                 overlap_score = overlap_metric["score"]
                 if overlap_score > best_vals[overlap_tag]:
                     best_vals[overlap_tag] = overlap_score
                     save(overlap_tag, overlap_score, overlap_metric)
+
+        golden_suffix = ""
+        if TRACK_GOLDEN:
+            golden_suffix = f" | golden updates: {len(golden_updates)}"
+            if golden_updates and PRINT_GOLDEN_UPDATE_DETAILS:
+                golden_suffix += " (" + ", ".join(golden_updates) + ")"
+
+        print(
+            f"Epoch {epoch + 1}/{EPOCHS} | "
+            f"train {train_loss:.6f} | val {val_loss:.6f} | "
+            f"mean MAE {overall_val_mae:.6f} | mean RMSE {overall_val_rmse:.6f} | "
+            f"{TARGET_COLS[OVERLAP_TARGET_INDEX]} overlap {target_overlap:.6f}"
+            f"{golden_suffix}"
+        )
 
         if TRACK_BEST_OVERLAP:
             overlap_improved = (
@@ -559,6 +594,7 @@ if TRAIN:
 
             checkpoint = load_golden_checkpoint(checkpoint_path)
             model.load_state_dict(checkpoint["model_state_dict"])
+            golden_output_dir, golden_file_prefix = get_golden_plot_location(metric_name)
 
             golden_plot_paths = make_canonical_val_diagnostic_plots(
                 model=model,
@@ -568,8 +604,8 @@ if TRAIN:
                 y_std_t=y_std_t,
                 target_cols=TARGET_COLS,
                 phi_index=PHI_INDEX,
-                output_dir=PLOT_DIR,
-                prefix=metric_name,
+                output_dir=golden_output_dir,
+                prefix=golden_file_prefix,
                 bins=100,
                 density=True,
                 show=False,
