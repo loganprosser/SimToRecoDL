@@ -12,6 +12,7 @@ TREE_NAME = "trackingNtuple/tree"
 OUTPUT_DIR = "detector_vis"
 OUTPUT_CSV = "visDET_hits.csv"
 OUTPUT_PLOT = "visDET_detector_map.png"
+OUTPUT_SUMMARY = "visDET_hit_type_summary.csv"
 
 DEFAULT_MAX_EVENTS = 80
 DEFAULT_CANDIDATES_PER_EVENT = 5000
@@ -34,14 +35,15 @@ OPTIONAL_BRANCHES = [
     "simhit_simTrkIdx",
 ]
 
-# Friendly names are intentionally conservative; unknown codes still plot fine.
+# The repo only documents hitType 4 as silicon / OT. Keep every label numeric
+# so unknown codes are explicit instead of looking like a decoded category.
 HIT_TYPE_LABELS = {
-    -1: "unknown",
-    0: "type 0",
-    1: "type 1",
-    2: "type 2",
-    3: "type 3",
-    4: "silicon / OT",
+    -1: "hitType -1: empty/unknown",
+    0: "hitType 0: undocumented",
+    1: "hitType 1: undocumented",
+    2: "hitType 2: undocumented",
+    3: "hitType 3: undocumented",
+    4: "hitType 4: silicon / OT",
 }
 
 SUBDET_LABELS = {
@@ -68,6 +70,11 @@ COLOR_CYCLE = [
 ]
 
 MARKERS = ["o", "s", "^", "D", "P", "X", "v", "*"]
+
+
+def hit_type_label(hit_type):
+    hit_type = int(hit_type)
+    return HIT_TYPE_LABELS.get(hit_type, f"hitType {hit_type}: undocumented")
 
 
 def first_value(value, default=-1):
@@ -126,7 +133,7 @@ def make_hit_record(event_arrays, event_number, hit_index):
         "r": r,
         "phi": phi,
         "hit_type": hit_type,
-        "hit_type_label": HIT_TYPE_LABELS.get(hit_type, f"type {hit_type}"),
+        "hit_type_label": hit_type_label(hit_type),
         "subdet": subdet,
         "subdet_label": SUBDET_LABELS.get(subdet, f"subdet {subdet}"),
         "layer": layer,
@@ -214,6 +221,41 @@ def balanced_downsample(df, max_total_hits, seed):
         )
 
     return out.sort_values(["hit_type", "event", "hit_index"]).reset_index(drop=True)
+
+
+def summarize_hit_types(df, seen_by_type):
+    rows = []
+    for hit_type in sorted(seen_by_type):
+        type_df = df[df["hit_type"] == hit_type] if not df.empty else pd.DataFrame()
+        subdet_counts = {}
+        layer_counts = {}
+        if not type_df.empty:
+            subdet_counts = {
+                f"{int(subdet)}:{SUBDET_LABELS.get(int(subdet), f'subdet {int(subdet)}')}": int(count)
+                for subdet, count in type_df["subdet"].value_counts().sort_index().items()
+            }
+            layer_counts = {
+                str(int(layer)): int(count)
+                for layer, count in type_df["layer"].value_counts().sort_index().items()
+            }
+
+        rows.append(
+            {
+                "hit_type": int(hit_type),
+                "hit_type_label": hit_type_label(hit_type),
+                "candidate_hits_seen": int(seen_by_type[hit_type]),
+                "sampled_hits_saved": int(len(type_df)),
+                "subdet_breakdown": "; ".join(f"{key}={value}" for key, value in subdet_counts.items()),
+                "layer_breakdown": "; ".join(f"{key}={value}" for key, value in layer_counts.items()),
+                "r_min": float(type_df["r"].min()) if not type_df.empty else np.nan,
+                "r_median": float(type_df["r"].median()) if not type_df.empty else np.nan,
+                "r_max": float(type_df["r"].max()) if not type_df.empty else np.nan,
+                "z_min": float(type_df["z"].min()) if not type_df.empty else np.nan,
+                "z_median": float(type_df["z"].median()) if not type_df.empty else np.nan,
+                "z_max": float(type_df["z"].max()) if not type_df.empty else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def draw_detector_guides(ax_side, ax_xy, df):
@@ -311,7 +353,7 @@ def plot_detector(df, output_path):
     sizes = pd.Series(marker_sizes(df), index=df.index)
 
     for (hit_type, subdet), group in df.groupby(["hit_type", "subdet"], sort=True):
-        label = f"{HIT_TYPE_LABELS.get(int(hit_type), f'type {int(hit_type)}')} | {SUBDET_LABELS.get(int(subdet), f'subdet {int(subdet)}')}"
+        label = f"{hit_type_label(hit_type)} | {SUBDET_LABELS.get(int(subdet), f'subdet {int(subdet)}')}"
         color = colors[hit_type]
         marker = markers[subdet]
         ax_side.scatter(
@@ -358,7 +400,7 @@ def plot_detector(df, output_path):
 
     counts = df["hit_type"].value_counts().sort_index()
     count_colors = [colors[hit_type] for hit_type in counts.index]
-    count_labels = [HIT_TYPE_LABELS.get(int(hit_type), f"type {int(hit_type)}") for hit_type in counts.index]
+    count_labels = [hit_type_label(hit_type).replace(": ", "\n") for hit_type in counts.index]
     ax_counts.bar(count_labels, counts.values, color=count_colors, alpha=0.82)
     ax_counts.set_title("plotted hits by type", fontsize=12, weight="bold")
     ax_counts.set_ylabel("count")
@@ -382,7 +424,7 @@ def plot_detector(df, output_path):
 
     subtitle = (
         f"{len(df):,} plotted hits, capped per type for readability. "
-        "Color = hit type, marker = subdet, size ~= energy loss when available."
+        "Color = numeric hitType, marker = subdet, size ~= energy loss when available."
     )
     fig.suptitle(subtitle, fontsize=11, y=1.01)
     fig.savefig(output_path, dpi=220, bbox_inches="tight")
@@ -398,6 +440,7 @@ def parse_args():
     parser.add_argument("--output-dir", default=OUTPUT_DIR, help="Directory for the CSV and plot.")
     parser.add_argument("--csv-name", default=OUTPUT_CSV, help="Output CSV filename.")
     parser.add_argument("--plot-name", default=OUTPUT_PLOT, help="Output plot filename.")
+    parser.add_argument("--summary-name", default=OUTPUT_SUMMARY, help="Output hit-type summary CSV filename.")
     parser.add_argument("--max-events", type=int, default=DEFAULT_MAX_EVENTS, help="Maximum events to inspect.")
     parser.add_argument("--batch-size", type=int, default=4, help="Events to read per uproot batch.")
     parser.add_argument(
@@ -430,12 +473,21 @@ def main():
 
     csv_path = os.path.join(args.output_dir, args.csv_name)
     plot_path = os.path.join(args.output_dir, args.plot_name)
+    summary_path = os.path.join(args.output_dir, args.summary_name)
+    summary_df = summarize_hit_types(df, seen_by_type)
     df.to_csv(csv_path, index=False)
+    summary_df.to_csv(summary_path, index=False)
     plot_detector(df, plot_path)
 
     print(f"Inspected {total_candidates:,} candidate hits.")
-    print("Candidate hit types seen:", dict(sorted(seen_by_type.items())))
+    print("Candidate hit types seen:")
+    for row in summary_df.itertuples(index=False):
+        print(
+            f"  {row.hit_type_label}: candidates={row.candidate_hits_seen:,}, "
+            f"saved={row.sampled_hits_saved:,}, subdets=[{row.subdet_breakdown}]"
+        )
     print(f"Saved {len(df):,} sampled hits to {csv_path}")
+    print(f"Saved hit-type summary to {summary_path}")
     print(f"Saved detector map to {plot_path}")
 
 
