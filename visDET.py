@@ -1,5 +1,7 @@
 import argparse
+import json
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter, defaultdict
 
 import numpy as np
@@ -9,20 +11,25 @@ import pandas as pd
 # ====== CONFIG ======
 INPUT_FILE = "/data2/segmentlinking/CMSSW_12_2_0_pre2/trackingNtuple_10mu_pt_0p5_50.root"
 TREE_NAME = "trackingNtuple/tree"
-OUTPUT_DIR = "detector_vis"
+OUTPUT_DIR = "detector_vis_chunk"
 OUTPUT_CSV = "visDET_hits.csv"
 OUTPUT_PLOT = "visDET_detector_map.png"
 OUTPUT_SUMMARY = "visDET_hit_type_summary.csv"
+OUTPUT_SUBDET_SUMMARY = "visDET_subdet_layer_summary.csv"
+OUTPUT_MANIFEST = "visDET_manifest.json"
 
 DEFAULT_MAX_EVENTS = 0
 DEFAULT_CANDIDATES_PER_EVENT = 5000
 DEFAULT_MAX_PER_HIT_TYPE = 350
 DEFAULT_MAX_TOTAL_HITS = 2500
 DEFAULT_INVENTORY_BATCH_SIZE = 20
+DEFAULT_BATCH_SIZE = 1
+DEFAULT_WORKERS = 12
+DEFAULT_CHUNK_EVENTS = 25
 RANDOM_SEED = 13
 
 REQUIRED_BRANCHES = ["simhit_x", "simhit_y", "simhit_z", "simhit_hitType"]
-OPTIONAL_BRANCHES = [
+GEOMETRY_BRANCHES = [
     "simhit_isLower",
     "simhit_isUpper",
     "simhit_isStack",
@@ -30,6 +37,8 @@ OPTIONAL_BRANCHES = [
     "simhit_layer",
     "simhit_module",
     "simhit_moduleType",
+]
+FULL_METADATA_BRANCHES = GEOMETRY_BRANCHES + [
     "simhit_process",
     "simhit_eloss",
     "simhit_tof",
@@ -109,12 +118,20 @@ def import_uproot():
     return uproot
 
 
-def load_available_branches(tree):
+def metadata_branches(level):
+    if level == "minimal":
+        return []
+    if level == "geometry":
+        return GEOMETRY_BRANCHES
+    return FULL_METADATA_BRANCHES
+
+
+def load_available_branches(tree, metadata_level="full"):
     available = set(tree.keys())
     missing = [branch for branch in REQUIRED_BRANCHES if branch not in available]
     if missing:
         raise KeyError(f"Missing required branches: {missing}")
-    return REQUIRED_BRANCHES + [branch for branch in OPTIONAL_BRANCHES if branch in available]
+    return REQUIRED_BRANCHES + [branch for branch in metadata_branches(metadata_level) if branch in available]
 
 
 def event_hit_count(event_arrays):
@@ -164,22 +181,32 @@ def make_hit_record(event_arrays, event_number, hit_index):
     }
 
 
-def collect_balanced_hits(args):
-    uproot = import_uproot()
+def add_reservoir_record(records_by_type, record, max_per_hit_type):
+    hit_type = record["hit_type"]
+    records = records_by_type[hit_type]
+    if len(records) < max_per_hit_type:
+        records.append(record)
+        return
 
-    rng = np.random.default_rng(args.seed)
+    worst_index = max(range(len(records)), key=lambda idx: records[idx]["sample_priority"])
+    if record["sample_priority"] < records[worst_index]["sample_priority"]:
+        records[worst_index] = record
+
+
+def scan_event_range(task):
+    uproot = import_uproot()
+    rng = np.random.default_rng(task["seed"])
     records_by_type = defaultdict(list)
     seen_by_type = Counter()
     valid_seen_by_type = Counter()
     total_hits_scanned = 0
 
-    with uproot.open(args.input) as root_file:
-        tree = root_file[args.tree]
-        branches = load_available_branches(tree)
-        n_events = event_limit(tree.num_entries, args.max_events)
+    with uproot.open(task["input"]) as root_file:
+        tree = root_file[task["tree"]]
+        branches = task["branches"]
 
-        for start in range(0, n_events, args.batch_size):
-            stop = min(start + args.batch_size, n_events)
+        for start in range(task["start"], task["stop"], task["batch_size"]):
+            stop = min(start + task["batch_size"], task["stop"])
             batch = tree.arrays(branches, entry_start=start, entry_stop=stop, library="np")
 
             for local_event, event_number in enumerate(range(start, stop)):
@@ -188,10 +215,10 @@ def collect_balanced_hits(args):
                 if n_hits == 0:
                     continue
 
-                if args.sample_all_hits:
+                if task["sample_all_hits"]:
                     hit_indices = range(n_hits)
                 else:
-                    n_candidates = min(n_hits, args.candidates_per_event)
+                    n_candidates = min(n_hits, task["candidates_per_event"])
                     hit_indices = rng.choice(n_hits, size=n_candidates, replace=False)
 
                 for hit_index in hit_indices:
@@ -204,20 +231,91 @@ def collect_balanced_hits(args):
                         continue
 
                     valid_seen_by_type[hit_type] += 1
-                    if len(records_by_type[hit_type]) < args.max_per_hit_type:
-                        records_by_type[hit_type].append(record)
-                        continue
+                    record["source_entry_start"] = task["start"]
+                    record["source_entry_stop"] = task["stop"]
+                    record["worker_seed"] = task["seed"]
+                    record["sample_priority"] = float(rng.random())
+                    add_reservoir_record(records_by_type, record, task["max_per_hit_type"])
 
-                    replacement_index = rng.integers(0, valid_seen_by_type[hit_type])
-                    if replacement_index < args.max_per_hit_type:
-                        records_by_type[hit_type][replacement_index] = record
+    records = [record for hit_type in sorted(records_by_type) for record in records_by_type[hit_type]]
+    return {
+        "records": records,
+        "seen_by_type": dict(seen_by_type),
+        "valid_seen_by_type": dict(valid_seen_by_type),
+        "total_hits_scanned": total_hits_scanned,
+        "start": task["start"],
+        "stop": task["stop"],
+    }
+
+
+def merge_scan_results(results, max_per_hit_type, max_total_hits, seed):
+    records_by_type = defaultdict(list)
+    seen_by_type = Counter()
+    valid_seen_by_type = Counter()
+    total_hits_scanned = 0
+
+    for result in results:
+        seen_by_type.update(result["seen_by_type"])
+        valid_seen_by_type.update(result["valid_seen_by_type"])
+        total_hits_scanned += result["total_hits_scanned"]
+        for record in result["records"]:
+            add_reservoir_record(records_by_type, record, max_per_hit_type)
 
     records = [record for hit_type in sorted(records_by_type) for record in records_by_type[hit_type]]
     df = pd.DataFrame(records)
-    if len(df) > args.max_total_hits:
-        df = balanced_downsample(df, args.max_total_hits, args.seed)
+    if len(df) > max_total_hits:
+        df = balanced_downsample(df, max_total_hits, seed)
 
-    return df, seen_by_type, valid_seen_by_type, total_hits_scanned, n_events
+    return df, seen_by_type, valid_seen_by_type, total_hits_scanned
+
+
+def make_scan_tasks(args, branches, n_events):
+    tasks = []
+    for worker_idx, start in enumerate(range(0, n_events, args.chunk_events)):
+        stop = min(start + args.chunk_events, n_events)
+        tasks.append(
+            {
+                "input": args.input,
+                "tree": args.tree,
+                "branches": branches,
+                "start": start,
+                "stop": stop,
+                "batch_size": args.batch_size,
+                "sample_all_hits": args.sample_all_hits,
+                "candidates_per_event": args.candidates_per_event,
+                "max_per_hit_type": args.max_per_hit_type,
+                "seed": args.seed + 1000003 * worker_idx,
+            }
+        )
+    return tasks
+
+
+def collect_balanced_hits(args):
+    uproot = import_uproot()
+
+    with uproot.open(args.input) as root_file:
+        tree = root_file[args.tree]
+        branches = load_available_branches(tree, args.metadata_level)
+        n_events = event_limit(tree.num_entries, args.max_events)
+
+    tasks = make_scan_tasks(args, branches, n_events)
+    if args.workers <= 1 or len(tasks) <= 1:
+        results = [scan_event_range(task) for task in tasks]
+    else:
+        results = []
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            futures = [executor.submit(scan_event_range, task) for task in tasks]
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    df, seen_by_type, valid_seen_by_type, total_hits_scanned = merge_scan_results(
+        results,
+        args.max_per_hit_type,
+        args.max_total_hits,
+        args.seed,
+    )
+
+    return df, seen_by_type, valid_seen_by_type, total_hits_scanned, n_events, len(tasks)
 
 
 def scan_hit_type_inventory(args):
@@ -307,6 +405,100 @@ def summarize_hit_types(df, seen_by_type, valid_seen_by_type=None, inventory_by_
             }
         )
     return pd.DataFrame(rows)
+
+
+def summarize_subdet_layers(df):
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "hit_type",
+                "hit_type_label",
+                "subdet",
+                "subdet_label",
+                "layer",
+                "sampled_hits_saved",
+                "r_min",
+                "r_median",
+                "r_max",
+                "z_min",
+                "z_median",
+                "z_max",
+            ]
+        )
+
+    rows = []
+    grouped = df.groupby(["hit_type", "subdet", "layer"], dropna=False, sort=True)
+    for (hit_type, subdet, layer), group in grouped:
+        rows.append(
+            {
+                "hit_type": int(hit_type),
+                "hit_type_label": hit_type_label(hit_type),
+                "subdet": int(subdet),
+                "subdet_label": SUBDET_LABELS.get(int(subdet), f"subdet {int(subdet)}"),
+                "layer": int(layer),
+                "sampled_hits_saved": int(len(group)),
+                "r_min": float(group["r"].min()),
+                "r_median": float(group["r"].median()),
+                "r_max": float(group["r"].max()),
+                "z_min": float(group["z"].min()),
+                "z_median": float(group["z"].median()),
+                "z_max": float(group["z"].max()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def write_manifest(args, manifest_path, paths, stats):
+    manifest = {
+        "input": args.input,
+        "tree": args.tree,
+        "outputs": paths,
+        "scan": stats,
+        "sampling": {
+            "sample_all_hits": args.sample_all_hits,
+            "max_per_hit_type": args.max_per_hit_type,
+            "max_total_hits": args.max_total_hits,
+            "candidates_per_event": args.candidates_per_event,
+            "metadata_level": args.metadata_level,
+            "seed": args.seed,
+        },
+        "parallel": {
+            "workers": args.workers,
+            "chunk_events": args.chunk_events,
+            "batch_size": args.batch_size,
+        },
+        "columns": {
+            "hits_csv": [
+                "event",
+                "hit_index",
+                "x",
+                "y",
+                "z",
+                "r",
+                "phi",
+                "hit_type",
+                "hit_type_label",
+                "subdet",
+                "subdet_label",
+                "layer",
+                "is_lower",
+                "is_upper",
+                "is_stack",
+                "module",
+                "module_type",
+                "process",
+                "eloss",
+                "tof",
+                "sim_trk_idx",
+                "source_entry_start",
+                "source_entry_stop",
+                "worker_seed",
+                "sample_priority",
+            ]
+        },
+    }
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
 
 
 def draw_detector_guides(ax_side, ax_xy, df):
@@ -493,12 +685,31 @@ def parse_args():
     parser.add_argument("--plot-name", default=OUTPUT_PLOT, help="Output plot filename.")
     parser.add_argument("--summary-name", default=OUTPUT_SUMMARY, help="Output hit-type summary CSV filename.")
     parser.add_argument(
+        "--subdet-summary-name",
+        default=OUTPUT_SUBDET_SUMMARY,
+        help="Output hitType/subdet/layer summary CSV filename.",
+    )
+    parser.add_argument("--manifest-name", default=OUTPUT_MANIFEST, help="Output run manifest JSON filename.")
+    parser.add_argument(
         "--max-events",
         type=int,
         default=DEFAULT_MAX_EVENTS,
         help="Event entries to inspect for plotting samples. Use 0 for all entries.",
     )
-    parser.add_argument("--batch-size", type=int, default=4, help="Events to read per uproot batch.")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Events to read per uproot batch.")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Parallel worker processes.")
+    parser.add_argument(
+        "--chunk-events",
+        type=int,
+        default=DEFAULT_CHUNK_EVENTS,
+        help="Event entries assigned to each worker task.",
+    )
+    parser.add_argument(
+        "--metadata-level",
+        choices=["minimal", "geometry", "full"],
+        default="full",
+        help="Extra hit columns to read into the modular CSV.",
+    )
     parser.add_argument(
         "--sample-all-hits",
         action=argparse.BooleanOptionalAction,
@@ -542,37 +753,81 @@ def parse_args():
         help="Final maximum number of hits plotted.",
     )
     parser.add_argument("--seed", type=int, default=RANDOM_SEED, help="Random seed for reproducible sampling.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.workers < 1:
+        raise SystemExit("--workers must be at least 1.")
+    if args.chunk_events < 1:
+        raise SystemExit("--chunk-events must be at least 1.")
+    if args.batch_size < 1:
+        raise SystemExit("--batch-size must be at least 1.")
+    if args.inventory_batch_size < 1:
+        raise SystemExit("--inventory-batch-size must be at least 1.")
+    if args.max_per_hit_type < 1:
+        raise SystemExit("--max-per-hit-type must be at least 1.")
+    if args.max_total_hits < 1:
+        raise SystemExit("--max-total-hits must be at least 1.")
+    return args
 
 
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
-    inventory_by_type = Counter()
-    inventory_events = 0
-    if args.inventory_hit_types:
-        inventory_by_type, inventory_events = scan_hit_type_inventory(args)
+    df, seen_by_type, valid_seen_by_type, total_hits_scanned, sample_events, n_tasks = collect_balanced_hits(args)
 
-    df, seen_by_type, valid_seen_by_type, total_hits_scanned, sample_events = collect_balanced_hits(args)
+    inventory_by_type = Counter(seen_by_type)
+    inventory_events = sample_events
+    inventory_source = "parallel sample pass"
+    if args.inventory_hit_types and not args.sample_all_hits:
+        inventory_by_type, inventory_events = scan_hit_type_inventory(args)
+        inventory_source = "separate exact inventory pass"
+    elif not args.inventory_hit_types:
+        inventory_by_type = Counter()
+        inventory_events = 0
+        inventory_source = "skipped"
 
     csv_path = os.path.join(args.output_dir, args.csv_name)
     plot_path = os.path.join(args.output_dir, args.plot_name)
     summary_path = os.path.join(args.output_dir, args.summary_name)
+    subdet_summary_path = os.path.join(args.output_dir, args.subdet_summary_name)
+    manifest_path = os.path.join(args.output_dir, args.manifest_name)
     summary_df = summarize_hit_types(df, seen_by_type, valid_seen_by_type, inventory_by_type)
+    subdet_summary_df = summarize_subdet_layers(df)
     df.to_csv(csv_path, index=False)
     summary_df.to_csv(summary_path, index=False)
+    subdet_summary_df.to_csv(subdet_summary_path, index=False)
     plot_detector(df, plot_path)
 
-    if args.inventory_hit_types:
-        print(f"Exact hitType inventory scanned {inventory_events:,} event entries.")
+    output_paths = {
+        "hits_csv": csv_path,
+        "hit_type_summary_csv": summary_path,
+        "subdet_layer_summary_csv": subdet_summary_path,
+        "detector_plot_png": plot_path,
+        "manifest_json": manifest_path,
+    }
+    stats = {
+        "inventory_source": inventory_source,
+        "inventory_events": inventory_events,
+        "sample_events": sample_events,
+        "worker_tasks": n_tasks,
+        "total_hits_scanned": total_hits_scanned,
+        "hit_types_seen": {str(k): int(v) for k, v in sorted(seen_by_type.items())},
+        "valid_xyz_by_hit_type": {str(k): int(v) for k, v in sorted(valid_seen_by_type.items())},
+    }
+    write_manifest(args, manifest_path, output_paths, stats)
+
+    if inventory_by_type:
+        print(f"Exact hitType inventory scanned {inventory_events:,} event entries ({inventory_source}).")
         for hit_type, count in sorted(inventory_by_type.items()):
             print(f"  {hit_type_label(hit_type)}: inventory={count:,}")
     else:
         print("Exact hitType inventory skipped; only sample-pass counts are available.")
 
     scan_mode = "all hits" if args.sample_all_hits else f"up to {args.candidates_per_event:,} random hits per event"
-    print(f"Sample pass scanned {total_hits_scanned:,} hits across {sample_events:,} event entries ({scan_mode}).")
+    print(
+        f"Sample pass scanned {total_hits_scanned:,} hits across {sample_events:,} event entries "
+        f"({scan_mode}, workers={args.workers}, tasks={n_tasks})."
+    )
     print("Hit types plotted/saved:")
     for row in summary_df.itertuples(index=False):
         print(
@@ -582,6 +837,8 @@ def main():
         )
     print(f"Saved {len(df):,} sampled hits to {csv_path}")
     print(f"Saved hit-type summary to {summary_path}")
+    print(f"Saved subdet/layer summary to {subdet_summary_path}")
+    print(f"Saved manifest to {manifest_path}")
     print(f"Saved detector map to {plot_path}")
 
 
