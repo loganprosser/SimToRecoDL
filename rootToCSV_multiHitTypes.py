@@ -15,7 +15,7 @@ COMPLETE_CSV = "filtered_particles_multihit_complete_0_4.csv"
 LONG_CSV = "filtered_particles_multihit_long.csv"
 SUMMARY_CSV = "filtered_particles_multihit_summary.csv"
 COVERAGE_CSV = "filtered_particles_multihit_coverage.csv"
-DEFAULT_WORKERS = 12
+DEFAULT_WORKERS = 32
 DEFAULT_CHUNK_EVENTS = 25
 
 ETACUT = 0.9
@@ -330,6 +330,14 @@ def merge_simple_counters(chunks):
     return counter
 
 
+def normalize_combo_key(key):
+    if isinstance(key, tuple):
+        return tuple(int(value) for value in key)
+    if key in ("", None):
+        return tuple()
+    return tuple(int(value) for value in str(key).split(",") if str(value) != "")
+
+
 def build_coverage_df(coverage, rejection_counts, tracks_with_type, selected_hit_multiplicity, track_type_combos, hit_types):
     rows = [
         {"metric": "events_processed", "value": int(coverage["events_processed"])},
@@ -425,7 +433,7 @@ def build_csvs(args):
     selected_hit_multiplicity = {hit_type: [] for hit_type in hit_types}
 
     for result in results:
-        track_type_combos.update({tuple(map(int, key.split(","))) if key else tuple(): value for key, value in result["track_type_combos"].items()})
+        track_type_combos.update({normalize_combo_key(key): value for key, value in result["track_type_combos"].items()})
         hit_type_counts.update(result["hit_type_counts"])
         tracks_with_type.update(result["tracks_with_type"])
         coverage.update(result["coverage"])
