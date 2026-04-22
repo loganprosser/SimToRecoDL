@@ -20,7 +20,7 @@ PTCUT = 1.9
 MUON_ID = 13
 SENTINEL = -999.0
 
-BRANCHES = [
+REQUIRED_BRANCHES = [
     "sim_q",
     "sim_pt",
     "sim_pdgId",
@@ -35,6 +35,9 @@ BRANCHES = [
     "simhit_y",
     "simhit_z",
     "simhit_hitType",
+]
+
+OPTIONAL_BRANCHES = [
     "simhit_isLower",
     "simhit_isUpper",
     "simhit_isStack",
@@ -62,6 +65,23 @@ def import_uproot():
             "rootToCSV_multiHitTypes needs uproot to read ROOT files. Install uproot in this Python environment."
         ) from exc
     return uproot
+
+
+def load_available_branches(tree):
+    available = set(tree.keys())
+    missing = [branch for branch in REQUIRED_BRANCHES if branch not in available]
+    if missing:
+        raise KeyError(f"Missing required branches: {missing}")
+    return REQUIRED_BRANCHES + [branch for branch in OPTIONAL_BRANCHES if branch in available]
+
+
+def value_at(data, branch, evt, index, default=-1):
+    if branch not in data:
+        return default
+    values = data[branch][evt]
+    if index >= len(values):
+        return default
+    return values[index]
 
 
 def parse_int_set(text):
@@ -126,12 +146,12 @@ def base_track_row(data, evt, sim_idx):
 
 
 def hit_record(data, evt, sim_idx, hit_index):
-    x = float(data["simhit_x"][evt][hit_index])
-    y = float(data["simhit_y"][evt][hit_index])
-    z = float(data["simhit_z"][evt][hit_index])
-    hit_type = int(first_value(data["simhit_hitType"][evt][hit_index], -1))
-    subdet = int(data["simhit_subdet"][evt][hit_index])
-    layer = int(data["simhit_layer"][evt][hit_index])
+    x = float(value_at(data, "simhit_x", evt, hit_index, np.nan))
+    y = float(value_at(data, "simhit_y", evt, hit_index, np.nan))
+    z = float(value_at(data, "simhit_z", evt, hit_index, np.nan))
+    hit_type = int(first_value(value_at(data, "simhit_hitType", evt, hit_index, []), -1))
+    subdet = int(value_at(data, "simhit_subdet", evt, hit_index, -1))
+    layer = int(value_at(data, "simhit_layer", evt, hit_index, -1))
     return {
         "event": evt,
         "sim_idx": sim_idx,
@@ -144,11 +164,11 @@ def hit_record(data, evt, sim_idx, hit_index):
         "phi": float(np.arctan2(y, x)),
         "subdet": subdet,
         "layer": layer,
-        "is_lower": int(data["simhit_isLower"][evt][hit_index]),
-        "is_upper": int(data["simhit_isUpper"][evt][hit_index]),
-        "is_stack": int(data["simhit_isStack"][evt][hit_index]),
-        "module": int(data["simhit_module"][evt][hit_index]),
-        "module_type": int(data["simhit_moduleType"][evt][hit_index]),
+        "is_lower": int(value_at(data, "simhit_isLower", evt, hit_index, -1)),
+        "is_upper": int(value_at(data, "simhit_isUpper", evt, hit_index, -1)),
+        "is_stack": int(value_at(data, "simhit_isStack", evt, hit_index, -1)),
+        "module": int(value_at(data, "simhit_module", evt, hit_index, -1)),
+        "module_type": int(value_at(data, "simhit_moduleType", evt, hit_index, -1)),
     }
 
 
@@ -226,11 +246,12 @@ def build_csvs(args):
 
     with uproot.open(args.input) as root_file:
         tree = root_file[args.tree]
+        branches = load_available_branches(tree)
         n_events = tree.num_entries if args.max_events == 0 else min(tree.num_entries, args.max_events)
 
         for start in range(0, n_events, args.batch_size):
             stop = min(start + args.batch_size, n_events)
-            data = tree.arrays(BRANCHES, entry_start=start, entry_stop=stop, library="np")
+            data = tree.arrays(branches, entry_start=start, entry_stop=stop, library="np")
 
             for local_evt, evt in enumerate(range(start, stop)):
                 n_particles = len(data["sim_pdgId"][local_evt])
