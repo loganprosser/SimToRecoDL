@@ -1,5 +1,6 @@
 import argparse
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 
 import numpy as np
@@ -8,12 +9,14 @@ import pandas as pd
 
 INPUT_FILE = "/data2/segmentlinking/CMSSW_12_2_0_pre2/trackingNtuple_10mu_pt_0p5_50.root"
 TREE_NAME = "trackingNtuple/tree"
-OUTPUT_DIR = "outputCSVs"
+OUTPUT_DIR = "outputCSVs_para"
 MASKED_CSV = "filtered_particles_multihit_masked.csv"
 COMPLETE_CSV = "filtered_particles_multihit_complete_0_4.csv"
 LONG_CSV = "filtered_particles_multihit_long.csv"
 SUMMARY_CSV = "filtered_particles_multihit_summary.csv"
 COVERAGE_CSV = "filtered_particles_multihit_coverage.csv"
+DEFAULT_WORKERS = 12
+DEFAULT_CHUNK_EVENTS = 25
 
 ETACUT = 0.9
 PTCUT = 1.9
@@ -229,11 +232,11 @@ def choose_slot_hits(hits, n_slots):
     return dict(sorted(slotted_hits.items()))
 
 
-def build_csvs(args):
+def process_event_chunk(task):
     uproot = import_uproot()
-    hit_types = sorted(parse_int_set(args.hit_types))
-    lower_only_hit_types = parse_int_set(args.lower_only_hit_types)
-    slots_by_type = parse_slots(args.slots, hit_types, args.default_slots)
+    hit_types = task["hit_types"]
+    lower_only_hit_types = set(task["lower_only_hit_types"])
+    slots_by_type = task["slots_by_type"]
 
     wide_rows = []
     long_rows = []
@@ -244,13 +247,12 @@ def build_csvs(args):
     coverage = Counter()
     rejection_counts = Counter()
 
-    with uproot.open(args.input) as root_file:
-        tree = root_file[args.tree]
-        branches = load_available_branches(tree)
-        n_events = tree.num_entries if args.max_events == 0 else min(tree.num_entries, args.max_events)
+    with uproot.open(task["input"]) as root_file:
+        tree = root_file[task["tree"]]
+        branches = task["branches"]
 
-        for start in range(0, n_events, args.batch_size):
-            stop = min(start + args.batch_size, n_events)
+        for start in range(task["start"], task["stop"], task["batch_size"]):
+            stop = min(start + task["batch_size"], task["stop"])
             data = tree.arrays(branches, entry_start=start, entry_stop=stop, library="np")
 
             for local_evt, evt in enumerate(range(start, stop)):
@@ -258,7 +260,7 @@ def build_csvs(args):
                 coverage["events_processed"] += 1
                 coverage["sim_particles_seen"] += n_particles
                 for sim_idx in range(n_particles):
-                    reasons = rejection_reasons(data, local_evt, sim_idx, args)
+                    reasons = rejection_reasons(data, local_evt, sim_idx, task["args"])
                     if reasons:
                         coverage["sim_particles_rejected"] += 1
                         for reason in reasons:
@@ -284,7 +286,7 @@ def build_csvs(args):
                         record["event"] = evt
                         hits_by_type[hit_type].append(record)
                         hit_type_counts[hit_type] += 1
-                        if args.write_long:
+                        if task["write_long"]:
                             long_row = dict(row)
                             long_row.update(record)
                             long_rows.append(long_row)
@@ -301,40 +303,49 @@ def build_csvs(args):
                     add_hits_to_wide_row(row, hits_by_type, hit_types, slots_by_type)
                     wide_rows.append(row)
 
-    wide_df = pd.DataFrame(wide_rows)
-    complete_df = (
-        wide_df[wide_df["has_all_requested_hit_types"] == 1].copy()
-        if "has_all_requested_hit_types" in wide_df
-        else pd.DataFrame()
-    )
-    long_df = pd.DataFrame(long_rows)
-    summary_df = pd.DataFrame(
-        [
-            {
-                "hit_type_combo": "+".join(str(hit_type) for hit_type in combo) if combo else "none",
-                "track_count": count,
-            }
-            for combo, count in sorted(track_type_combos.items(), key=lambda item: (str(item[0]), item[1]))
-        ]
-    )
-    hit_count_df = pd.DataFrame(
-        [{"hit_type": hit_type, "attached_hit_count": count} for hit_type, count in sorted(hit_type_counts.items())]
-    )
-    coverage_rows = [
+    return {
+        "wide_rows": wide_rows,
+        "long_rows": long_rows,
+        "track_type_combos": dict(track_type_combos),
+        "hit_type_counts": dict(hit_type_counts),
+        "tracks_with_type": dict(tracks_with_type),
+        "selected_hit_multiplicity": {str(hit_type): values for hit_type, values in selected_hit_multiplicity.items()},
+        "coverage": dict(coverage),
+        "rejection_counts": dict(rejection_counts),
+    }
+
+
+def merge_counter_rows(chunks, key_field, value_field):
+    counter = Counter()
+    for chunk in chunks:
+        for row in chunk:
+            counter[row[key_field]] += row[value_field]
+    return pd.DataFrame([{key_field: key, value_field: value} for key, value in sorted(counter.items())])
+
+
+def merge_simple_counters(chunks):
+    counter = Counter()
+    for chunk in chunks:
+        counter.update(chunk)
+    return counter
+
+
+def build_coverage_df(coverage, rejection_counts, tracks_with_type, selected_hit_multiplicity, track_type_combos, hit_types):
+    rows = [
         {"metric": "events_processed", "value": int(coverage["events_processed"])},
         {"metric": "sim_particles_seen", "value": int(coverage["sim_particles_seen"])},
         {"metric": "selected_tracks", "value": int(coverage["selected_tracks"])},
         {"metric": "sim_particles_rejected", "value": int(coverage["sim_particles_rejected"])},
-        {"metric": "complete_tracks_all_requested_hit_types", "value": int(len(complete_df))},
-        {"metric": "masked_tracks_all_selected", "value": int(len(wide_df))},
+        {"metric": "complete_tracks_all_requested_hit_types", "value": int(track_type_combos.get(tuple(hit_types), 0))},
+        {"metric": "masked_tracks_all_selected", "value": int(coverage["selected_tracks"])},
     ]
     selected_count = max(int(coverage["selected_tracks"]), 1)
     for reason, count in sorted(rejection_counts.items()):
-        coverage_rows.append({"metric": f"rejected_by_{reason}", "value": int(count)})
+        rows.append({"metric": f"rejected_by_{reason}", "value": int(count)})
     for hit_type in hit_types:
-        counts = np.asarray(selected_hit_multiplicity[hit_type], dtype=float)
+        counts = np.asarray(selected_hit_multiplicity.get(hit_type, []), dtype=float)
         present = int(tracks_with_type[hit_type])
-        coverage_rows.extend(
+        rows.extend(
             [
                 {"metric": f"tracks_with_ht{hit_type}", "value": present},
                 {"metric": f"tracks_without_ht{hit_type}", "value": int(coverage["selected_tracks"] - present)},
@@ -351,9 +362,97 @@ def build_csvs(args):
         )
     for combo, count in sorted(track_type_combos.items(), key=lambda item: (str(item[0]), item[1])):
         label = "+".join(str(hit_type) for hit_type in combo) if combo else "none"
-        coverage_rows.append({"metric": f"tracks_combo_{label}", "value": int(count)})
-        coverage_rows.append({"metric": f"fraction_tracks_combo_{label}", "value": int(count) / selected_count})
-    coverage_df = pd.DataFrame(coverage_rows)
+        rows.append({"metric": f"tracks_combo_{label}", "value": int(count)})
+        rows.append({"metric": f"fraction_tracks_combo_{label}", "value": int(count) / selected_count})
+    return pd.DataFrame(rows)
+
+
+def build_tasks(args, branches, n_events):
+    hit_types = sorted(parse_int_set(args.hit_types))
+    lower_only_hit_types = sorted(parse_int_set(args.lower_only_hit_types))
+    slots_by_type = parse_slots(args.slots, hit_types, args.default_slots)
+    tasks = []
+    for start in range(0, n_events, args.chunk_events):
+        stop = min(start + args.chunk_events, n_events)
+        tasks.append(
+            {
+                "input": args.input,
+                "tree": args.tree,
+                "branches": branches,
+                "start": start,
+                "stop": stop,
+                "batch_size": args.batch_size,
+                "hit_types": hit_types,
+                "lower_only_hit_types": lower_only_hit_types,
+                "slots_by_type": slots_by_type,
+                "args": args,
+                "write_long": args.write_long,
+            }
+        )
+    return tasks
+
+
+def build_csvs(args):
+    uproot = import_uproot()
+    hit_types = sorted(parse_int_set(args.hit_types))
+    with uproot.open(args.input) as root_file:
+        tree = root_file[args.tree]
+        branches = load_available_branches(tree)
+        n_events = tree.num_entries if args.max_events == 0 else min(tree.num_entries, args.max_events)
+
+    tasks = build_tasks(args, branches, n_events)
+    if args.workers <= 1 or len(tasks) <= 1:
+        results = [process_event_chunk(task) for task in tasks]
+    else:
+        results = []
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            futures = [executor.submit(process_event_chunk, task) for task in tasks]
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    wide_df = pd.DataFrame([row for result in results for row in result["wide_rows"]])
+    long_df = pd.DataFrame([row for result in results for row in result["long_rows"]])
+    complete_df = (
+        wide_df[wide_df["has_all_requested_hit_types"] == 1].copy()
+        if "has_all_requested_hit_types" in wide_df
+        else pd.DataFrame()
+    )
+    track_type_combos = Counter()
+    hit_type_counts = Counter()
+    tracks_with_type = Counter()
+    coverage = Counter()
+    rejection_counts = Counter()
+    selected_hit_multiplicity = {hit_type: [] for hit_type in hit_types}
+
+    for result in results:
+        track_type_combos.update({tuple(map(int, key.split(","))) if key else tuple(): value for key, value in result["track_type_combos"].items()})
+        hit_type_counts.update(result["hit_type_counts"])
+        tracks_with_type.update(result["tracks_with_type"])
+        coverage.update(result["coverage"])
+        rejection_counts.update(result["rejection_counts"])
+        for hit_type_str, values in result["selected_hit_multiplicity"].items():
+            selected_hit_multiplicity[int(hit_type_str)].extend(values)
+
+    summary_df = pd.DataFrame(
+        [
+            {
+                "hit_type_combo": "+".join(str(hit_type) for hit_type in combo) if combo else "none",
+                "track_count": count,
+            }
+            for combo, count in sorted(track_type_combos.items(), key=lambda item: (str(item[0]), item[1]))
+        ]
+    )
+    coverage_df = build_coverage_df(
+        coverage,
+        rejection_counts,
+        tracks_with_type,
+        selected_hit_multiplicity,
+        track_type_combos,
+        hit_types,
+    )
+    hit_count_df = pd.DataFrame(
+        [{"hit_type": hit_type, "attached_hit_count": count} for hit_type, count in sorted(hit_type_counts.items())]
+    )
 
     os.makedirs(args.output_dir, exist_ok=True)
     masked_path = os.path.join(args.output_dir, args.masked_csv)
@@ -372,6 +471,7 @@ def build_csvs(args):
     hit_count_df.to_csv(hit_count_path, index=False)
 
     print(f"Selected {coverage['selected_tracks']:,} tracks from {coverage['sim_particles_seen']:,} sim particles.")
+    print(f"Processed {n_events:,} events using {args.workers} worker(s) across {len(tasks):,} chunk tasks.")
     print(f"Saved {len(wide_df):,} masked/all-selected track rows to {masked_path}")
     print(f"Saved {len(complete_df):,} complete all-hit-type track rows to {complete_path}")
     if args.write_long:
@@ -402,10 +502,18 @@ def parse_args():
     parser.add_argument("--pdg-id", type=int, default=MUON_ID)
     parser.add_argument("--max-events", type=int, default=0, help="Events to process. Use 0 for all entries.")
     parser.add_argument("--batch-size", type=int, default=1, help="Events to read per uproot batch.")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Parallel worker processes.")
+    parser.add_argument("--chunk-events", type=int, default=DEFAULT_CHUNK_EVENTS, help="Events assigned per worker task.")
     parser.add_argument("--write-long", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if not parse_int_set(args.hit_types):
         raise SystemExit("--hit-types must include at least one integer hitType.")
+    if args.workers < 1:
+        raise SystemExit("--workers must be at least 1.")
+    if args.chunk_events < 1:
+        raise SystemExit("--chunk-events must be at least 1.")
+    if args.batch_size < 1:
+        raise SystemExit("--batch-size must be at least 1.")
     return args
 
 
