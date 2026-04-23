@@ -36,11 +36,11 @@ from helpers_vis import (
 from loss import hetero_gaussian_nll_with_phi
 from model import HeteroTrackNet
 
-
 DEFAULT_DATA_DIR = "/nfs/cms/tracktrigger/logan/root/simvrico/SimToRecoDL/outputCSVs/outputCSVs_hittype_compare"
 DEFAULT_OUTPUT_DIR = "auto"
-DEFAULT_MAX_CONCURRENT = 2
-DEFAULT_DEVICE_SLOTS = ""
+DEFAULT_MAX_CONCURRENT = 6
+DEFAULT_DEVICE_SLOTS = "cuda:0=4,cuda:1=2" # cuda 0 = L40 46gb, cuda 1 = L4 24gb
+DEFAULT_DATALOADER_WORKERS = 0
 DEFAULT_TRACK_OVERLAP_GOLDEN = False
 FIELD_ORDER = {"x": 0, "y": 1, "z": 2, "r": 3, "mask": 4}
 BUCKET_RE = re.compile(r"^ht(?P<hit_type>-?\d+)_bucket_(?P<bucket>\d+)_(?P<field>x|y|z|r|mask)$")
@@ -96,6 +96,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--val-fraction", type=float, default=VAL_FRACTION)
+    parser.add_argument("--dataloader-workers", type=int, default=DEFAULT_DATALOADER_WORKERS, help="PyTorch DataLoader worker count per training run.")
     parser.add_argument("--show-plots", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--print-final-samples", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
@@ -240,7 +241,7 @@ def rotate_phi_targets_to_canonical(y: np.ndarray, target_cols: list[str], rotat
     return y_rot
 
 
-def load_auto_track_data(csv_path: Path, batch_size: int, seed: int, device, val_fraction: float) -> AutoDataBundle:
+def load_auto_track_data(csv_path: Path, batch_size: int, seed: int, device, val_fraction: float, dataloader_workers: int) -> AutoDataBundle:
     df = pd.read_csv(csv_path)
     target_cols = list(DEFAULT_TARGET_COLS)
     feature_cols = detect_feature_cols(df.columns.tolist())
@@ -298,12 +299,14 @@ def load_auto_track_data(csv_path: Path, batch_size: int, seed: int, device, val
         batch_size=batch_size,
         shuffle=True,
         generator=generator,
+        num_workers=dataloader_workers,
     )
     val_loader = DataLoader(
         TensorDataset(x_val_t, y_val_t, rot_val_t),
         batch_size=batch_size,
         shuffle=False,
         generator=generator,
+        num_workers=dataloader_workers,
     )
 
     return AutoDataBundle(
@@ -547,6 +550,7 @@ def build_checkpoint_metadata(data: AutoDataBundle, input_dim: int, csv_path: Pa
         "dropout": DROPOUT,
         "activation": "ReLU",
         "batch_size": args.batch_size,
+        "dataloader_workers": args.dataloader_workers,
         "seed": args.seed,
         "val_fraction": args.val_fraction,
         "criterion": CRITERION.__name__,
@@ -568,14 +572,25 @@ def train_one_dataset(csv_path: Path, auto_root: Path, args, device):
     dataset_name = csv_path.stem
     run_dir = auto_root / dataset_name
     plot_dir = run_dir / "plots"
+    final_plot_dir = plot_dir / "final"
+    best_dxy_plot_dir = plot_dir / "best_dxy_corr"
     golden_model_dir = run_dir / "goldenmodels"
     save_dir = run_dir / "saves"
     golden_summary_file = run_dir / "golden_summary.txt"
     os.makedirs(plot_dir, exist_ok=True)
+    os.makedirs(final_plot_dir, exist_ok=True)
+    os.makedirs(best_dxy_plot_dir, exist_ok=True)
     os.makedirs(golden_model_dir, exist_ok=True)
     os.makedirs(save_dir, exist_ok=True)
 
-    data = load_auto_track_data(csv_path, batch_size=args.batch_size, seed=args.seed, device=device, val_fraction=args.val_fraction)
+    data = load_auto_track_data(
+        csv_path,
+        batch_size=args.batch_size,
+        seed=args.seed,
+        device=device,
+        val_fraction=args.val_fraction,
+        dataloader_workers=args.dataloader_workers,
+    )
     input_dim = data.x_train.shape[1]
     model = HeteroTrackNet(
         input_dim=input_dim,
@@ -602,6 +617,9 @@ def train_one_dataset(csv_path: Path, auto_root: Path, args, device):
     best_val_epoch = 0
     best_model_paths = {}
     best_plot_report_paths = {}
+    best_dxy_corr_score = -float("inf")
+    best_dxy_corr_epoch = 0
+    best_dxy_plot_paths = {}
 
     def save_golden(metric_tag, metric_value, metric_details, epoch, report, overlap_report, plot_quality_report):
         full_report = f"{report}\n{overlap_report}\n{plot_quality_report}"
@@ -623,6 +641,43 @@ def train_one_dataset(csv_path: Path, auto_root: Path, args, device):
             handle.write(full_report)
             handle.write("\n")
         best_plot_report_paths[metric_tag] = str(report_path)
+
+    def save_best_dxy_corr_plots(epoch, scatter_score, report, overlap_report, plot_quality_report):
+        nonlocal best_dxy_corr_score, best_dxy_corr_epoch, best_dxy_plot_paths
+
+        best_dxy_corr_score = float(scatter_score)
+        best_dxy_corr_epoch = epoch + 1
+        best_dxy_plot_paths = make_canonical_val_diagnostic_plots(
+            model=model,
+            val_loader=data.val_loader,
+            device=device,
+            y_mean_t=data.y_mean_t,
+            y_std_t=data.y_std_t,
+            target_cols=data.target_cols,
+            phi_index=data.phi_index,
+            output_dir=str(best_dxy_plot_dir),
+            prefix=dataset_name,
+            bins=100,
+            density=True,
+            show=False,
+            scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
+            central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
+            figure_label=f"{dataset_name} | best_dxy_corr",
+        )
+        report_path = best_dxy_plot_dir / "best_dxy_corr_training_report.txt"
+        with open(report_path, "w", encoding="utf-8") as handle:
+            handle.write("BEST DXY CORRELATION PLOT SNAPSHOT\n")
+            handle.write("=" * 80 + "\n")
+            handle.write(f"dataset: {dataset_name}\n")
+            handle.write(f"target: {data.target_cols[OVERLAP_TARGET_INDEX]}\n")
+            handle.write(f"epoch: {epoch + 1}\n")
+            handle.write(f"scatter_score: {float(scatter_score):.6f}\n\n")
+            handle.write(report)
+            handle.write("\n")
+            handle.write(overlap_report)
+            handle.write("\n")
+            handle.write(plot_quality_report)
+            handle.write("\n")
 
     for epoch in range(args.epochs):
         model.train()
@@ -698,6 +753,8 @@ def train_one_dataset(csv_path: Path, auto_root: Path, args, device):
             if scatter_score > best_vals[scatter_tag]:
                 best_vals[scatter_tag] = scatter_score
                 save_golden(scatter_tag, scatter_score, scatter_metric, epoch, report, overlap_report, plot_quality_report)
+                if target_name == data.target_cols[OVERLAP_TARGET_INDEX]:
+                    save_best_dxy_corr_plots(epoch, scatter_score, report, overlap_report, plot_quality_report)
 
             if args.track_overlap_golden:
                 overlap_tag = f"{GOLDEN_OVERLAP_PREFIX}{target_name}"
@@ -720,10 +777,10 @@ def train_one_dataset(csv_path: Path, auto_root: Path, args, device):
 
     history_plot_paths = make_training_history_plots(
         training_history,
-        output_dir=str(plot_dir),
+        output_dir=str(final_plot_dir),
         prefix=dataset_name,
         show=False,
-        figure_label=dataset_name,
+        figure_label=f"{dataset_name} | final",
     )
     val_plot_paths = make_canonical_val_diagnostic_plots(
         model=model,
@@ -733,14 +790,14 @@ def train_one_dataset(csv_path: Path, auto_root: Path, args, device):
         y_std_t=data.y_std_t,
         target_cols=data.target_cols,
         phi_index=data.phi_index,
-        output_dir=str(plot_dir),
+        output_dir=str(final_plot_dir),
         prefix=dataset_name,
         bins=100,
         density=True,
         show=args.show_plots,
         scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
         central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
-        figure_label=dataset_name,
+        figure_label=f"{dataset_name} | final",
     )
     if args.print_final_samples:
         print_canonical_final_validation_samples(model, data.val_loader, device, data.y_mean_t, data.y_std_t, data.target_cols, data.phi_index, num_examples=5)
@@ -780,10 +837,15 @@ def train_one_dataset(csv_path: Path, auto_root: Path, args, device):
         "final_val_mean_mae": float(training_history["val_mean_mae"][-1]),
         "final_val_mean_rmse": float(training_history["val_mean_rmse"][-1]),
         "run_dir": str(run_dir),
+        "final_plot_dir": str(final_plot_dir),
+        "best_dxy_corr_plot_dir": str(best_dxy_plot_dir),
+        "best_dxy_corr_epoch": int(best_dxy_corr_epoch),
+        "best_dxy_corr_score": float(best_dxy_corr_score),
         "best_val_checkpoint_path": str(save_dir / "best_val_loss.pt"),
         "final_checkpoint_path": str(save_dir / "final_model.pt"),
         "history_plot_count": len(history_plot_paths),
         "val_plot_count": len(val_plot_paths),
+        "best_dxy_plot_count": len(best_dxy_plot_paths),
     }
     pd.DataFrame(metric_rows).to_csv(run_dir / "metric_summary.csv", index=False)
     pd.DataFrame([run_summary]).to_csv(run_dir / "run_summary.csv", index=False)
