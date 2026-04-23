@@ -7,6 +7,21 @@ import torch
 from helpers import denormalize_targets, wrapped_angle_diff
 
 
+def _add_figure_label(fig, figure_label):
+    if not figure_label:
+        return
+
+    fig.text(
+        0.995,
+        0.005,
+        str(figure_label),
+        ha="right",
+        va="bottom",
+        fontsize=6,
+        alpha=0.65,
+    )
+
+
 def unpack_model_output(output):
     if isinstance(output, (tuple, list)):
         pred = output[0]
@@ -441,6 +456,7 @@ def plot_overlap_distributions(
     show=True,
     axis_limits=None,
     central_fraction=0.99,
+    figure_label=None,
 ):
     n_targets = len(target_cols)
     fig, axes = plt.subplots(2, n_targets, figsize=(5 * n_targets, 8))
@@ -483,6 +499,7 @@ def plot_overlap_distributions(
             ax.set_ylabel("Density" if density else "Count")
             ax.legend()
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -508,6 +525,7 @@ def plot_pred_vs_true_scatter(
     max_points=5000,
     seed=42,
     central_fraction=0.99,
+    figure_label=None,
 ):
     n_targets = len(target_cols)
     fig, axes = plt.subplots(2, n_targets, figsize=(5 * n_targets, 8))
@@ -562,6 +580,7 @@ def plot_pred_vs_true_scatter(
             ax.set_xlabel("Actual")
             ax.set_ylabel("Predicted")
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -584,6 +603,7 @@ def plot_pull_distributions(
     density=True,
     save_path=None,
     show=True,
+    figure_label=None,
 ):
     if y_sigma is None:
         print("Skipping pull plot because this model did not return sigma/logvar.")
@@ -619,6 +639,7 @@ def plot_pull_distributions(
         ax.set_xlabel("(pred - actual) / sigma")
         ax.set_ylabel("Density" if density else "Count")
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -641,6 +662,7 @@ def plot_distance_distribution(
     density=True,
     save_path=None,
     show=True,
+    figure_label=None,
 ):
     residuals = phi_wrapped_residuals(y_pred, y_true, phi_index)
 
@@ -667,6 +689,7 @@ def plot_distance_distribution(
         ax.axvline(expected, color="black", linewidth=1.0, linestyle="--", label="sqrt(n targets)")
         ax.legend()
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -811,6 +834,7 @@ def plot_training_performance(
     history,
     save_path=None,
     show=True,
+    figure_label=None,
 ):
     epochs = history["epoch"]
 
@@ -836,6 +860,7 @@ def plot_training_performance(
     axes[1].set_ylabel("Error")
     axes[1].legend()
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -852,6 +877,7 @@ def plot_learning_rate_history(
     history,
     save_path=None,
     show=True,
+    figure_label=None,
 ):
     fig, ax = plt.subplots(1, 1, figsize=(6, 4))
 
@@ -860,6 +886,7 @@ def plot_learning_rate_history(
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Learning rate")
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -877,6 +904,7 @@ def make_training_history_plots(
     output_dir="plots",
     prefix="training",
     show=False,
+    figure_label=None,
 ):
     if not history["epoch"]:
         print("Skipping training history plots because no epochs were recorded.")
@@ -893,11 +921,13 @@ def make_training_history_plots(
         history=history,
         save_path=paths["performance"],
         show=show,
+        figure_label=figure_label,
     )
     plot_learning_rate_history(
         history=history,
         save_path=paths["learning_rate"],
         show=show,
+        figure_label=figure_label,
     )
 
     return paths

@@ -372,6 +372,7 @@ def make_canonical_val_diagnostic_plots(
     axis_limits=None,
     scatter_max_points=5000,
     central_fraction=0.99,
+    figure_label=None,
 ):
     import os
 
@@ -405,6 +406,7 @@ def make_canonical_val_diagnostic_plots(
         show=show,
         axis_limits=axis_limits,
         central_fraction=central_fraction,
+        figure_label=figure_label,
     )
 
     plot_pred_vs_true_scatter(
@@ -415,6 +417,7 @@ def make_canonical_val_diagnostic_plots(
         show=show,
         max_points=scatter_max_points,
         central_fraction=central_fraction,
+        figure_label=figure_label,
     )
 
     if y_sigma is not None:
@@ -428,6 +431,7 @@ def make_canonical_val_diagnostic_plots(
             density=density,
             save_path=paths["pull"],
             show=show,
+            figure_label=figure_label,
         )
     else:
         print("Skipping pull plot because this model did not return sigma/logvar.")
@@ -442,6 +446,7 @@ def make_canonical_val_diagnostic_plots(
         density=density,
         save_path=paths["distance"],
         show=show,
+        figure_label=figure_label,
     )
 
     return paths
