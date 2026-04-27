@@ -1,9 +1,12 @@
 import argparse
+import hashlib
+import json
 import os
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
@@ -13,12 +16,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from helpers import (
-    format_epoch_report,
-    save_golden_model,
-    save_model_checkpoint,
-    write_final_golden_summary,
-)
+from helpers import format_epoch_report, save_model_checkpoint
 from helpers_canonical_phi import recover_phi_from_canonical
 from helpers_data import DEFAULT_TARGET_COLS, build_hit_feature_cols, set_seed
 from helpers_vis import (
@@ -40,6 +38,7 @@ DEFAULT_MAX_CONCURRENT = 2
 DEFAULT_DEVICE_SLOTS = "cuda:0=1,cuda:1=1"
 DEFAULT_DATALOADER_WORKERS = 0
 DEFAULT_TRACK_OVERLAP_GOLDEN = False
+DEFAULT_FASTFIT_PRECOMPUTE_WORKERS = 16
 TRAINING_MODES = ("canonical", "raw")
 
 EPOCHS = 750
@@ -55,10 +54,7 @@ VAL_FRACTION = 0.2
 OVERLAP_TARGET_INDEX = 3
 DIAGNOSTIC_CENTRAL_FRACTION = 0.99
 DIAGNOSTIC_SCATTER_MAX_POINTS = None
-GOLDEN_SCATTER_PREFIX = "best_scatter_linear_"
-GOLDEN_OVERLAP_PREFIX = "best_overlap_cover_"
 BEST_OVERALL_SCATTER_TAG = "best_overall_scatter"
-BEST_OVERALL_OVERLAP_TAG = "best_overall_overlap"
 
 FIELD_ORDER = {"x": 0, "y": 1, "z": 2, "r": 3, "mask": 4}
 FAST_FIT_COLS = ["fast_pca_c", "fast_pca_eta", "fast_pca_phi", "fast_pca_dxy", "fast_pca_dz"]
@@ -103,6 +99,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--val-fraction", type=float, default=VAL_FRACTION)
     parser.add_argument("--dataloader-workers", type=int, default=DEFAULT_DATALOADER_WORKERS)
+    parser.add_argument(
+        "--fastfit-precompute-workers",
+        type=int,
+        default=DEFAULT_FASTFIT_PRECOMPUTE_WORKERS,
+        help="CPU worker count for one-time fast-fit cache generation.",
+    )
     parser.add_argument("--show-plots", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--print-final-samples", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
@@ -324,6 +326,102 @@ def compute_fast_fit_targets(x_raw: np.ndarray, y_truth: np.ndarray, hit_groups:
     return fast, failures
 
 
+def _compute_fast_fit_row(task):
+    row, truth_row, hit_groups, sentinel_value = task
+    xyz_hits = []
+    for cols in hit_groups:
+        if row[cols["mask"]] <= 0.5:
+            continue
+        x_value = row[cols["x"]]
+        y_value = row[cols["y"]]
+        z_value = row[cols["z"]]
+        if x_value == sentinel_value or y_value == sentinel_value or z_value == sentinel_value:
+            continue
+        xyz_hits.append((x_value, y_value, z_value))
+    if len(xyz_hits) < 3:
+        return truth_row.astype(np.float32), True
+    try:
+        return fit_helix_xyz_pca_linearized(np.asarray(xyz_hits, dtype=float)), False
+    except Exception:
+        return truth_row.astype(np.float32), True
+
+
+def build_fastfit_cache_prefix(csv_path: Path) -> str:
+    digest = hashlib.sha1(str(csv_path.resolve()).encode("utf-8")).hexdigest()[:10]
+    return f"{csv_path.stem}_{digest}"
+
+
+def load_or_create_fastfit_cache(
+    csv_path: Path,
+    output_dir: Path,
+    x_raw: np.ndarray,
+    y_truth_raw: np.ndarray,
+    hit_groups: list[dict],
+    worker_count: int,
+):
+    cache_dir = output_dir / "fastfit_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_prefix = build_fastfit_cache_prefix(csv_path)
+    cache_npz = cache_dir / f"{cache_prefix}.npz"
+    cache_meta = cache_dir / f"{cache_prefix}.json"
+
+    source_stat = csv_path.stat()
+    expected_meta = {
+        "csv_path": str(csv_path.resolve()),
+        "csv_size": int(source_stat.st_size),
+        "csv_mtime_ns": int(source_stat.st_mtime_ns),
+        "rows": int(len(x_raw)),
+        "targets": list(DEFAULT_TARGET_COLS),
+        "worker_count": int(worker_count),
+    }
+
+    if cache_npz.exists() and cache_meta.exists():
+        try:
+            saved_meta = json.loads(cache_meta.read_text(encoding="utf-8"))
+            cached = np.load(cache_npz)
+            fast_fit_raw = cached["fast_fit_raw"].astype(np.float32)
+            n_fastfit_failures = int(cached["n_fastfit_failures"][0])
+            if (
+                saved_meta.get("csv_path") == expected_meta["csv_path"]
+                and saved_meta.get("csv_size") == expected_meta["csv_size"]
+                and saved_meta.get("csv_mtime_ns") == expected_meta["csv_mtime_ns"]
+                and saved_meta.get("rows") == expected_meta["rows"]
+                and fast_fit_raw.shape == y_truth_raw.shape
+            ):
+                print(f"Loaded fast-fit cache: {cache_npz}")
+                return fast_fit_raw, n_fastfit_failures, cache_npz
+            print(f"Fast-fit cache metadata mismatch, rebuilding: {cache_npz}")
+        except Exception as exc:
+            print(f"Failed to load fast-fit cache, rebuilding {cache_npz}: {exc}")
+
+    print(
+        f"Building fast-fit cache with {worker_count} worker(s) for {len(x_raw):,} tracks: {cache_npz}"
+    )
+    tasks = [
+        (x_raw[row_idx], y_truth_raw[row_idx], hit_groups, -999.0)
+        for row_idx in range(len(x_raw))
+    ]
+    if worker_count > 1:
+        with Pool(processes=worker_count) as pool:
+            results = pool.map(_compute_fast_fit_row, tasks, chunksize=max(1, len(tasks) // (worker_count * 8)))
+    else:
+        results = [_compute_fast_fit_row(task) for task in tasks]
+
+    fast_fit_raw = np.stack([item[0] for item in results]).astype(np.float32)
+    n_fastfit_failures = int(sum(1 for _, failed in results if failed))
+
+    np.savez_compressed(
+        cache_npz,
+        fast_fit_raw=fast_fit_raw,
+        n_fastfit_failures=np.asarray([n_fastfit_failures], dtype=np.int64),
+    )
+    cache_meta.write_text(json.dumps(expected_meta, indent=2), encoding="utf-8")
+    print(
+        f"Saved fast-fit cache: {cache_npz} | failures={n_fastfit_failures:,}/{len(x_raw):,}"
+    )
+    return fast_fit_raw, n_fastfit_failures, cache_npz
+
+
 def build_residual_targets(truth_values: np.ndarray, baseline_values: np.ndarray, phi_index: int | None):
     residual = truth_values - baseline_values
     if phi_index is not None:
@@ -347,12 +445,14 @@ def maybe_recover_canonical_phi(values: torch.Tensor, rotation_angles: torch.Ten
 
 def load_fastfit_track_data(
     csv_path: Path,
+    output_dir: Path,
     batch_size: int,
     seed: int,
     device,
     val_fraction: float,
     dataloader_workers: int,
     training_mode: str,
+    fastfit_precompute_workers: int,
 ) -> FastFitDataBundle:
     df = pd.read_csv(csv_path)
     target_cols = list(DEFAULT_TARGET_COLS)
@@ -365,7 +465,14 @@ def load_fastfit_track_data(
     y_truth_raw = df[target_cols].to_numpy(dtype=np.float32)
     hit_groups = build_hit_groups(feature_cols)
 
-    fast_fit_raw, n_fastfit_failures = compute_fast_fit_targets(x_raw, y_truth_raw, hit_groups)
+    fast_fit_raw, n_fastfit_failures, cache_path = load_or_create_fastfit_cache(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        x_raw=x_raw,
+        y_truth_raw=y_truth_raw,
+        hit_groups=hit_groups,
+        worker_count=max(1, int(fastfit_precompute_workers)),
+    )
 
     x_proc = x_raw.copy()
     x_proc[x_proc == -999.0] = 0.0
@@ -538,6 +645,8 @@ def build_subprocess_command(args, mode: str, device_name: str) -> list[str]:
         device_name,
         "--dataloader-workers",
         str(args.dataloader_workers),
+        "--fastfit-precompute-workers",
+        str(args.fastfit_precompute_workers),
         "--no-show-plots",
         "--no-print-final-samples",
     ]
@@ -646,6 +755,7 @@ def build_checkpoint_metadata(data: FastFitDataBundle, input_dim: int, csv_path:
         "canonical_phi": data.training_mode == "canonical",
         "canonical_rotation_source": data.rotation_source,
         "fast_fit_baseline": "peter_linearized_3d_helix_fit",
+        "fast_fit_cache_dir": str(Path(args.output_dir) / "fastfit_cache"),
         "target_definition": "truth_minus_fast_fit_residual",
         "source_csv": str(csv_path),
         "n_fastfit_failures": int(data.n_fastfit_failures),
@@ -794,6 +904,7 @@ def make_fastfit_baseline_comparison_plots(
     show=False,
     max_points=5000,
     seed=42,
+    central_fraction=0.99,
     figure_label=None,
 ):
     import matplotlib.pyplot as plt
@@ -822,8 +933,23 @@ def make_fastfit_baseline_comparison_plots(
             pred_vals = pred_vals[mask]
             if len(true_vals) == 0:
                 continue
-            lo = min(true_vals.min(), pred_vals.min())
-            hi = max(true_vals.max(), pred_vals.max())
+            merged = np.concatenate([true_vals, pred_vals])
+            if central_fraction < 1.0:
+                tail = (1.0 - central_fraction) / 2.0
+                lo, hi = np.quantile(merged, [tail, 1.0 - tail])
+                central_mask = (
+                    (true_vals >= lo)
+                    & (true_vals <= hi)
+                    & (pred_vals >= lo)
+                    & (pred_vals <= hi)
+                )
+                true_vals = true_vals[central_mask]
+                pred_vals = pred_vals[central_mask]
+                if len(true_vals) == 0:
+                    continue
+            else:
+                lo = float(merged.min())
+                hi = float(merged.max())
             if np.isclose(lo, hi):
                 lo -= 0.5
                 hi += 0.5
@@ -856,14 +982,28 @@ def make_fastfit_baseline_comparison_plots(
         merged = np.concatenate([true_vals[mask_true], fast_vals[mask_fast], pred_vals[mask_pred]])
         if len(merged) == 0:
             continue
-        lo, hi = np.quantile(merged, [0.005, 0.995])
+        if central_fraction < 1.0:
+            tail = (1.0 - central_fraction) / 2.0
+            lo, hi = np.quantile(merged, [tail, 1.0 - tail])
+            true_vals = true_vals[mask_true]
+            fast_vals = fast_vals[mask_fast]
+            pred_vals = pred_vals[mask_pred]
+            true_vals = true_vals[(true_vals >= lo) & (true_vals <= hi)]
+            fast_vals = fast_vals[(fast_vals >= lo) & (fast_vals <= hi)]
+            pred_vals = pred_vals[(pred_vals >= lo) & (pred_vals <= hi)]
+        else:
+            lo, hi = float(merged.min()), float(merged.max())
         if np.isclose(lo, hi):
             lo -= 0.5
             hi += 0.5
         bins = np.linspace(lo, hi, 100)
-        ax.hist(true_vals[mask_true], bins=bins, alpha=0.4, density=True, label="Actual")
-        ax.hist(fast_vals[mask_fast], bins=bins, alpha=0.4, density=True, label="Fast fit")
-        ax.hist(pred_vals[mask_pred], bins=bins, alpha=0.4, density=True, label="Model")
+        if central_fraction >= 1.0:
+            true_vals = true_vals[mask_true]
+            fast_vals = fast_vals[mask_fast]
+            pred_vals = pred_vals[mask_pred]
+        ax.hist(true_vals, bins=bins, alpha=0.4, density=True, label="Actual")
+        ax.hist(fast_vals, bins=bins, alpha=0.4, density=True, label="Fast fit")
+        ax.hist(pred_vals, bins=bins, alpha=0.4, density=True, label="Model")
         ax.set_title(name)
         ax.legend()
     if figure_label:
@@ -966,42 +1106,43 @@ def build_baseline_comparison_report(y_true, y_pred, y_fast, target_cols):
 
 def summarize_mode_outputs(auto_root: Path, modes: list[str]):
     rows = []
-    metric_rows = []
+    model_rows = []
     for mode in modes:
         run_dir = auto_root / mode
         run_summary_path = run_dir / "run_summary.csv"
-        metric_summary_path = run_dir / "metric_summary.csv"
+        model_summary_path = run_dir / "model_summary.csv"
         if run_summary_path.exists():
             rows.extend(pd.read_csv(run_summary_path).to_dict(orient="records"))
-        if metric_summary_path.exists():
-            metric_rows.extend(pd.read_csv(metric_summary_path).to_dict(orient="records"))
+        if model_summary_path.exists():
+            model_rows.extend(pd.read_csv(model_summary_path).to_dict(orient="records"))
     if rows:
         pd.DataFrame(rows).to_csv(auto_root / "mode_run_summary.csv", index=False)
-    if metric_rows:
-        pd.DataFrame(metric_rows).to_csv(auto_root / "mode_metric_summary.csv", index=False)
+    if model_rows:
+        pd.DataFrame(model_rows).to_csv(auto_root / "mode_model_summary.csv", index=False)
 
 
 def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode: str):
     run_dir = auto_root / training_mode
     plot_dir = run_dir / "plots"
     final_plot_dir = plot_dir / "final"
-    best_dxy_plot_dir = plot_dir / "best_dxy_corr"
-    golden_model_dir = run_dir / "goldenmodels"
+    best_overall_plot_dir = plot_dir / "best_overall"
+    best_val_loss_plot_dir = plot_dir / "best_val_loss"
     save_dir = run_dir / "saves"
-    golden_summary_file = run_dir / "golden_summary.txt"
     os.makedirs(final_plot_dir, exist_ok=True)
-    os.makedirs(best_dxy_plot_dir, exist_ok=True)
-    os.makedirs(golden_model_dir, exist_ok=True)
+    os.makedirs(best_overall_plot_dir, exist_ok=True)
+    os.makedirs(best_val_loss_plot_dir, exist_ok=True)
     os.makedirs(save_dir, exist_ok=True)
 
     data = load_fastfit_track_data(
         csv_path=csv_path,
+        output_dir=auto_root,
         batch_size=args.batch_size,
         seed=args.seed,
         device=device,
         val_fraction=args.val_fraction,
         dataloader_workers=args.dataloader_workers,
         training_mode=training_mode,
+        fastfit_precompute_workers=args.fastfit_precompute_workers,
     )
     input_dim = data.x_train.shape[1]
     model = HeteroTrackNet(
@@ -1017,58 +1158,20 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
 
     training_history = {"epoch": [], "train_loss": [], "val_loss": [], "val_mean_mae": [], "val_mean_rmse": [], "learning_rate": []}
-    best_vals = {}
-    best_reports = {}
-    best_epochs = {}
-    best_vals[BEST_OVERALL_SCATTER_TAG] = -float("inf")
-    if args.track_overlap_golden:
-        best_vals[BEST_OVERALL_OVERLAP_TAG] = -float("inf")
-    for name in data.target_cols:
-        best_vals[f"{GOLDEN_SCATTER_PREFIX}{name}"] = -float("inf")
-        if args.track_overlap_golden:
-            best_vals[f"{GOLDEN_OVERLAP_PREFIX}{name}"] = -float("inf")
-
     best_val_loss = float("inf")
     best_val_epoch = 0
-    best_model_paths = {}
-    best_plot_report_paths = {}
+    best_val_loss_plot_paths = {}
+    best_val_loss_report_path = ""
     best_overall_scatter_score = -float("inf")
     best_overall_scatter_epoch = 0
     best_overall_plot_paths = {}
-    best_overall_overlap_score = -float("inf")
-    best_overall_overlap_epoch = 0
+    best_overall_report_path = ""
+    best_overall_checkpoint_path = ""
 
-    def save_golden(metric_tag, metric_value, metric_details, epoch, report, overlap_report, plot_quality_report, baseline_report):
-        full_report = f"{report}\n{overlap_report}\n{plot_quality_report}\n{baseline_report}"
-        metadata = build_checkpoint_metadata(data, input_dim, csv_path, args, report_text=full_report)
-        metadata.update(
-            {
-                "metric_tag": metric_tag,
-                "metric_value": float(metric_value),
-                "plot_quality_metric": metric_details,
-                "mode": training_mode,
-            }
-        )
-        save_golden_model(model, optimizer, scheduler, metric_tag, metric_value, epoch, full_report, str(golden_model_dir), metadata)
-        best_reports[metric_tag] = full_report
-        best_epochs[metric_tag] = epoch + 1
-        best_model_paths[metric_tag] = str(golden_model_dir / f"{metric_tag}.pt")
-        golden_output_dir, golden_file_prefix = get_golden_plot_location(plot_dir, metric_tag)
-        os.makedirs(golden_output_dir, exist_ok=True)
-        report_path = golden_output_dir / f"{golden_file_prefix}_training_report.txt"
-        with open(report_path, "w", encoding="utf-8") as handle:
-            handle.write("GOLDEN TRAINING REPORT\n")
-            handle.write("=" * 80 + "\n")
-            handle.write(f"metric_tag: {metric_tag}\n")
-            handle.write(f"epoch: {epoch + 1}\n")
-            handle.write(f"metric_value: {float(metric_value):.6f}\n\n")
-            handle.write(full_report)
-            handle.write("\n")
-        best_plot_report_paths[metric_tag] = str(report_path)
-
-    def save_best_overall_plots(metric_tag, epoch, metric_value, report, overlap_report, plot_quality_report, baseline_report):
-        nonlocal best_overall_plot_paths
-        best_overall_plot_paths = make_mode_val_diagnostic_plots(
+    def save_snapshot_outputs(output_dir: Path, checkpoint_tag: str, epoch: int, metric_value: float, report_text: str, show: bool):
+        nonlocal best_overall_plot_paths, best_overall_report_path
+        nonlocal best_val_loss_plot_paths, best_val_loss_report_path
+        plot_paths = make_mode_val_diagnostic_plots(
             model=model,
             val_loader=data.val_loader,
             device=device,
@@ -1077,14 +1180,14 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
             target_cols=data.target_cols,
             phi_index=data.phi_index,
             training_mode=training_mode,
-            output_dir=str(best_dxy_plot_dir),
+            output_dir=str(output_dir),
             prefix=training_mode,
             bins=100,
             density=True,
-            show=False,
+            show=show,
             scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
             central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
-            figure_label=f"{training_mode} | {metric_tag}",
+            figure_label=f"{training_mode} | {checkpoint_tag}",
         )
         y_pred, y_true, y_fast, _ = collect_predictions_targets_and_sigma(
             model=model,
@@ -1095,35 +1198,36 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
             phi_index=data.phi_index,
             training_mode=training_mode,
         )
-        best_overall_plot_paths.update(
+        plot_paths.update(
             make_fastfit_baseline_comparison_plots(
                 y_true=y_true,
                 y_pred=y_pred,
                 y_fast=y_fast,
                 target_cols=data.target_cols,
-                output_dir=str(best_dxy_plot_dir),
+                output_dir=str(output_dir),
                 prefix=training_mode,
-                show=False,
+                show=show,
                 max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
-                figure_label=f"{training_mode} | {metric_tag}",
+                central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
+                figure_label=f"{training_mode} | {checkpoint_tag}",
             )
         )
-        report_path = best_dxy_plot_dir / f"{metric_tag}_training_report.txt"
+        report_path = output_dir / f"{checkpoint_tag}_training_report.txt"
         with open(report_path, "w", encoding="utf-8") as handle:
-            handle.write("BEST OVERALL MODEL SNAPSHOT\n")
+            handle.write(f"{checkpoint_tag.upper()} MODEL REPORT\n")
             handle.write("=" * 80 + "\n")
             handle.write(f"mode: {training_mode}\n")
-            handle.write(f"metric_tag: {metric_tag}\n")
-            handle.write(f"epoch: {epoch + 1}\n")
+            handle.write(f"epoch: {epoch}\n")
             handle.write(f"metric_value: {float(metric_value):.6f}\n\n")
-            handle.write(report)
+            handle.write(report_text)
             handle.write("\n")
-            handle.write(overlap_report)
-            handle.write("\n")
-            handle.write(plot_quality_report)
-            handle.write("\n")
-            handle.write(baseline_report)
-            handle.write("\n")
+        if checkpoint_tag == "best_overall":
+            best_overall_plot_paths = plot_paths
+            best_overall_report_path = str(report_path)
+        elif checkpoint_tag == "best_val_loss":
+            best_val_loss_plot_paths = plot_paths
+            best_val_loss_report_path = str(report_path)
+        return plot_paths, str(report_path)
 
     for epoch in range(args.epochs):
         model.train()
@@ -1150,10 +1254,10 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
         total_val_mae = torch.zeros(len(data.target_cols), device=device)
         total_val_sq = torch.zeros(len(data.target_cols), device=device)
         total_count = 0
-
         overlap_pred_parts = []
         overlap_true_parts = []
         overlap_fast_parts = []
+
         with torch.no_grad():
             for xb, yb, rb, fastb in data.val_loader:
                 xb = xb.to(device)
@@ -1174,7 +1278,6 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
 
                 pred_resid_phys = mu * data.y_std_t + data.y_mean_t
                 true_resid_phys = yb * data.y_std_t + data.y_mean_t
-
                 pred_proc = reconstruct_full_targets(fastb, pred_resid_phys, data.phi_index)
                 true_proc = reconstruct_full_targets(fastb, true_resid_phys, data.phi_index)
                 fast_proc = fastb
@@ -1217,6 +1320,7 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
             f"      mean_scatter_score: {overall_scatter_score:.6f}\n"
             f"      mean_overlap_score: {overall_overlap_score:.6f}"
         )
+        full_report = f"{report}\n{overlap_report}\n{overall_report}\n{plot_quality_report}\n{baseline_report}"
 
         training_history["epoch"].append(epoch + 1)
         training_history["train_loss"].append(train_loss)
@@ -1228,62 +1332,40 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_val_epoch = epoch + 1
-            metadata = build_checkpoint_metadata(data, input_dim, csv_path, args, report_text=f"{report}\n{overlap_report}\n{plot_quality_report}\n{baseline_report}")
+            metadata = build_checkpoint_metadata(data, input_dim, csv_path, args, report_text=full_report)
             metadata.update({"checkpoint_type": "best_val_loss", "val_loss": float(val_loss), "mode": training_mode})
             save_model_checkpoint(str(save_dir / "best_val_loss.pt"), model, optimizer, scheduler, epoch + 1, metadata)
+            save_snapshot_outputs(
+                best_val_loss_plot_dir,
+                "best_val_loss",
+                epoch + 1,
+                float(val_loss),
+                full_report,
+                False,
+            )
 
         if overall_scatter_score > best_overall_scatter_score:
             best_overall_scatter_score = overall_scatter_score
             best_overall_scatter_epoch = epoch + 1
-            save_golden(
-                BEST_OVERALL_SCATTER_TAG,
+            best_overall_checkpoint_path = str(save_dir / "best_overall.pt")
+            metadata = build_checkpoint_metadata(data, input_dim, csv_path, args, report_text=full_report)
+            metadata.update(
+                {
+                    "checkpoint_type": BEST_OVERALL_SCATTER_TAG,
+                    "metric_tag": BEST_OVERALL_SCATTER_TAG,
+                    "metric_value": float(overall_scatter_score),
+                    "mode": training_mode,
+                }
+            )
+            save_model_checkpoint(best_overall_checkpoint_path, model, optimizer, scheduler, epoch + 1, metadata)
+            save_snapshot_outputs(
+                best_overall_plot_dir,
+                "best_overall",
+                epoch + 1,
                 overall_scatter_score,
-                {"score": overall_scatter_score},
-                epoch,
-                report,
-                f"{overlap_report}\n{overall_report}",
-                plot_quality_report,
-                baseline_report,
+                full_report,
+                False,
             )
-            save_best_overall_plots(
-                BEST_OVERALL_SCATTER_TAG,
-                epoch,
-                overall_scatter_score,
-                report,
-                f"{overlap_report}\n{overall_report}",
-                plot_quality_report,
-                baseline_report,
-            )
-
-        if args.track_overlap_golden and overall_overlap_score > best_overall_overlap_score:
-            best_overall_overlap_score = overall_overlap_score
-            best_overall_overlap_epoch = epoch + 1
-            save_golden(
-                BEST_OVERALL_OVERLAP_TAG,
-                overall_overlap_score,
-                {"score": overall_overlap_score},
-                epoch,
-                report,
-                f"{overlap_report}\n{overall_report}",
-                plot_quality_report,
-                baseline_report,
-            )
-
-        for target_name in data.target_cols:
-            scatter_tag = f"{GOLDEN_SCATTER_PREFIX}{target_name}"
-            scatter_metric = plot_quality_scores["scatter"][target_name]
-            scatter_score = scatter_metric["score"]
-            if scatter_score > best_vals[scatter_tag]:
-                best_vals[scatter_tag] = scatter_score
-                save_golden(scatter_tag, scatter_score, scatter_metric, epoch, report, f"{overlap_report}\n{overall_report}", plot_quality_report, baseline_report)
-
-            if args.track_overlap_golden:
-                overlap_tag = f"{GOLDEN_OVERLAP_PREFIX}{target_name}"
-                overlap_metric = plot_quality_scores["overlap"][target_name]
-                overlap_score = overlap_metric["score"]
-                if overlap_score > best_vals[overlap_tag]:
-                    best_vals[overlap_tag] = overlap_score
-                    save_golden(overlap_tag, overlap_score, overlap_metric, epoch, report, f"{overlap_report}\n{overall_report}", plot_quality_report, baseline_report)
 
         print(
             f"[{training_mode}] Epoch {epoch + 1}/{args.epochs} | train {train_loss:.6f} | "
@@ -1293,33 +1375,11 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
         )
         scheduler.step()
 
-    final_metadata = build_checkpoint_metadata(data, input_dim, csv_path, args, report_text="final_model")
-    final_metadata.update({"checkpoint_type": "final_model", "best_val_loss": float(best_val_loss), "best_val_epoch": best_val_epoch, "mode": training_mode})
-    save_model_checkpoint(str(save_dir / "final_model.pt"), model, optimizer, scheduler, args.epochs, final_metadata)
-
     history_plot_paths = make_training_history_plots(
         training_history,
         output_dir=str(final_plot_dir),
         prefix=training_mode,
         show=False,
-        figure_label=f"{training_mode} | final",
-    )
-    val_plot_paths = make_mode_val_diagnostic_plots(
-        model=model,
-        val_loader=data.val_loader,
-        device=device,
-        y_mean_t=data.y_mean_t,
-        y_std_t=data.y_std_t,
-        target_cols=data.target_cols,
-        phi_index=data.phi_index,
-        training_mode=training_mode,
-        output_dir=str(final_plot_dir),
-        prefix=training_mode,
-        bins=100,
-        density=True,
-        show=args.show_plots,
-        scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
-        central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
         figure_label=f"{training_mode} | final",
     )
 
@@ -1332,18 +1392,45 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
         phi_index=data.phi_index,
         training_mode=training_mode,
     )
-    compare_plot_paths = make_fastfit_baseline_comparison_plots(
-        y_true=y_true,
-        y_pred=y_pred,
-        y_fast=y_fast,
-        target_cols=data.target_cols,
-        output_dir=str(final_plot_dir),
-        prefix=training_mode,
-        show=args.show_plots,
-        max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
-        figure_label=f"{training_mode} | final",
-    )
     baseline_report, model_scores, fast_scores = build_baseline_comparison_report(y_true, y_pred, y_fast, data.target_cols)
+    final_target_overlap = compute_target_histogram_overlap(y_true, y_pred, OVERLAP_TARGET_INDEX, data.target_cols, bins=100)
+    final_per_target_mae = np.mean(np.abs(y_pred - y_true), axis=0)
+    final_per_target_rmse = np.sqrt(np.mean((y_pred - y_true) ** 2, axis=0))
+    final_overall_scatter_score = float(np.mean([model_scores["scatter"][name]["score"] for name in data.target_cols]))
+    final_overall_overlap_score = float(np.mean([model_scores["overlap"][name]["score"] for name in data.target_cols]))
+    final_epoch_report = format_epoch_report(
+        args.epochs - 1,
+        args.epochs,
+        training_history["train_loss"][-1],
+        training_history["val_loss"][-1],
+        training_history["val_mean_mae"][-1],
+        training_history["val_mean_rmse"][-1],
+        final_per_target_mae,
+        final_per_target_rmse,
+        data.target_cols,
+    )
+    final_full_report = (
+        f"{final_epoch_report}\n"
+        f"   Overlap {data.target_cols[OVERLAP_TARGET_INDEX]}: {final_target_overlap:.6f} | MAE: {float(final_per_target_mae[OVERLAP_TARGET_INDEX]):.6f}\n"
+        f"   Overall model-selection scores:\n"
+        f"      mean_scatter_score: {final_overall_scatter_score:.6f}\n"
+        f"      mean_overlap_score: {final_overall_overlap_score:.6f}\n"
+        f"{format_plot_quality_report(model_scores)}\n"
+        f"{baseline_report}"
+    )
+
+    final_metadata = build_checkpoint_metadata(data, input_dim, csv_path, args, report_text=final_full_report)
+    final_metadata.update({"checkpoint_type": "final_model", "best_val_loss": float(best_val_loss), "best_val_epoch": best_val_epoch, "mode": training_mode})
+    save_model_checkpoint(str(save_dir / "final_model.pt"), model, optimizer, scheduler, args.epochs, final_metadata)
+
+    val_plot_paths, final_report_path = save_snapshot_outputs(
+        final_plot_dir,
+        "final",
+        args.epochs,
+        final_overall_scatter_score,
+        final_full_report,
+        args.show_plots,
+    )
     with open(final_plot_dir / "fastfit_vs_model_report.txt", "w", encoding="utf-8") as handle:
         handle.write("FAST FIT VS MODEL REPORT\n")
         handle.write("=" * 80 + "\n")
@@ -1367,25 +1454,41 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
             num_examples=5,
         )
 
-    write_final_golden_summary(str(golden_summary_file), best_reports, best_vals)
-
-    metric_rows = []
-    for metric_tag, value in best_vals.items():
-        family = "scatter" if metric_tag.startswith(GOLDEN_SCATTER_PREFIX) else "overlap"
-        target = metric_tag.split("_")[-1]
-        metric_rows.append(
-            {
-                "mode": training_mode,
-                "csv_path": str(csv_path),
-                "metric_tag": metric_tag,
-                "metric_family": family,
-                "target": target,
-                "best_score": float(value),
-                "best_epoch": int(best_epochs.get(metric_tag, 0)),
-                "checkpoint_path": best_model_paths.get(metric_tag, ""),
-                "report_path": best_plot_report_paths.get(metric_tag, ""),
-            }
-        )
+    model_rows = [
+        {
+            "mode": training_mode,
+            "csv_path": str(csv_path),
+            "snapshot": "best_val_loss",
+            "metric_tag": "best_val_loss",
+            "score": float(best_val_loss),
+            "epoch": int(best_val_epoch),
+            "checkpoint_path": str(save_dir / "best_val_loss.pt"),
+            "report_path": best_val_loss_report_path,
+            "plot_dir": str(best_val_loss_plot_dir),
+        },
+        {
+            "mode": training_mode,
+            "csv_path": str(csv_path),
+            "snapshot": "best_overall",
+            "metric_tag": BEST_OVERALL_SCATTER_TAG,
+            "score": float(best_overall_scatter_score),
+            "epoch": int(best_overall_scatter_epoch),
+            "checkpoint_path": best_overall_checkpoint_path,
+            "report_path": best_overall_report_path,
+            "plot_dir": str(best_overall_plot_dir),
+        },
+        {
+            "mode": training_mode,
+            "csv_path": str(csv_path),
+            "snapshot": "final",
+            "metric_tag": "final_model",
+            "score": float(final_overall_scatter_score),
+            "epoch": int(args.epochs),
+            "checkpoint_path": str(save_dir / "final_model.pt"),
+            "report_path": final_report_path,
+            "plot_dir": str(final_plot_dir),
+        },
+    ]
 
     run_summary = {
         "mode": training_mode,
@@ -1401,22 +1504,22 @@ def train_one_mode(csv_path: Path, auto_root: Path, args, device, training_mode:
         "final_val_mean_rmse": float(training_history["val_mean_rmse"][-1]),
         "run_dir": str(run_dir),
         "final_plot_dir": str(final_plot_dir),
-        "best_dxy_corr_plot_dir": str(best_dxy_plot_dir),
+        "best_overall_plot_dir": str(best_overall_plot_dir),
+        "best_val_loss_plot_dir": str(best_val_loss_plot_dir),
+        "best_val_loss_plot_count": len(best_val_loss_plot_paths),
         "best_overall_scatter_epoch": int(best_overall_scatter_epoch),
         "best_overall_scatter_score": float(best_overall_scatter_score),
-        "best_overall_overlap_epoch": int(best_overall_overlap_epoch),
-        "best_overall_overlap_score": float(best_overall_overlap_score),
         "best_val_checkpoint_path": str(save_dir / "best_val_loss.pt"),
+        "best_overall_checkpoint_path": best_overall_checkpoint_path,
         "final_checkpoint_path": str(save_dir / "final_model.pt"),
         "history_plot_count": len(history_plot_paths),
-        "val_plot_count": len(val_plot_paths),
-        "compare_plot_count": len(compare_plot_paths),
+        "final_plot_count": len(val_plot_paths),
         "best_overall_plot_count": len(best_overall_plot_paths),
         "n_fastfit_failures": int(data.n_fastfit_failures),
     }
-    pd.DataFrame(metric_rows).to_csv(run_dir / "metric_summary.csv", index=False)
+    pd.DataFrame(model_rows).to_csv(run_dir / "model_summary.csv", index=False)
     pd.DataFrame([run_summary]).to_csv(run_dir / "run_summary.csv", index=False)
-    return run_summary, metric_rows
+    return run_summary, model_rows
 
 
 def main():
