@@ -7,6 +7,21 @@ import torch
 from helpers import denormalize_targets, wrapped_angle_diff
 
 
+def _add_figure_label(fig, figure_label):
+    if not figure_label:
+        return
+
+    fig.text(
+        0.995,
+        0.005,
+        str(figure_label),
+        ha="right",
+        va="bottom",
+        fontsize=6,
+        alpha=0.65,
+    )
+
+
 def unpack_model_output(output):
     if isinstance(output, (tuple, list)):
         pred = output[0]
@@ -168,28 +183,73 @@ def phi_wrapped_residuals(y_pred, y_true, phi_index):
     return residuals
 
 
-def get_overlap_plot_range(y_true, y_pred, target_index, target_name=None, axis_limits=None):
-    axis_limits = axis_limits or {}
+def _finite_values(values):
+    values = np.asarray(values)
+    return values[np.isfinite(values)]
 
-    true_vals = y_true[:, target_index]
-    pred_vals = y_pred[:, target_index]
 
-    vmin = min(true_vals.min(), pred_vals.min())
-    vmax = max(true_vals.max(), pred_vals.max())
+def _pad_range(vmin, vmax, pad_fraction=0.02):
+    if vmin == vmax:
+        return vmin - 0.5, vmax + 0.5
 
-    if target_name == "pca_c":
-        vmin, vmax = -0.1, 0.1
-    elif target_name == "pca_dxy":
-        vmin, vmax = -0.005, 0.005
+    pad = (vmax - vmin) * pad_fraction
+    return vmin - pad, vmax + pad
 
-    if target_name in axis_limits:
-        vmin, vmax = axis_limits[target_name]
+
+def _central_range(values, central_fraction=0.99):
+    values = _finite_values(values)
+
+    if len(values) == 0:
+        return -0.5, 0.5
+
+    central_fraction = float(central_fraction)
+    central_fraction = min(max(central_fraction, 0.0), 1.0)
+
+    if central_fraction >= 1.0:
+        return float(values.min()), float(values.max())
+
+    tail_fraction = (1.0 - central_fraction) / 2.0
+    vmin, vmax = np.quantile(values, [tail_fraction, 1.0 - tail_fraction])
+    return float(vmin), float(vmax)
+
+
+def _target_plot_values(y_true, y_pred, target_index):
+    true_vals = _finite_values(y_true[:, target_index])
+    pred_vals = _finite_values(y_pred[:, target_index])
+    return np.concatenate([true_vals, pred_vals])
+
+
+def _target_axis_range(y_true, y_pred, target_index, central_fraction=1.0, axis_limit=None, padded=True):
+    if axis_limit is not None:
+        vmin, vmax = axis_limit
+    else:
+        values = _target_plot_values(y_true, y_pred, target_index)
+        vmin, vmax = _central_range(values, central_fraction=central_fraction)
+
+    if padded:
+        return _pad_range(vmin, vmax)
 
     if vmin == vmax:
-        vmin -= 0.5
-        vmax += 0.5
+        return vmin - 0.5, vmax + 0.5
 
     return vmin, vmax
+
+
+def _finite_pair_mask(true_vals, pred_vals):
+    return np.isfinite(true_vals) & np.isfinite(pred_vals)
+
+
+def get_overlap_plot_range(y_true, y_pred, target_index, target_name=None, axis_limits=None):
+    axis_limits = axis_limits or {}
+    axis_limit = axis_limits.get(target_name)
+    return _target_axis_range(
+        y_true=y_true,
+        y_pred=y_pred,
+        target_index=target_index,
+        central_fraction=1.0,
+        axis_limit=axis_limit,
+        padded=False,
+    )
 
 
 def compute_target_histogram_overlap(
@@ -222,6 +282,170 @@ def compute_target_histogram_overlap(
     return float(overlap)
 
 
+def _safe_std(values):
+    if len(values) < 2:
+        return 0.0
+    return float(np.std(values))
+
+
+def compute_target_scatter_linearity(
+    y_true,
+    y_pred,
+    target_index,
+):
+    true_vals = y_true[:, target_index]
+    pred_vals = y_pred[:, target_index]
+    mask = _finite_pair_mask(true_vals, pred_vals)
+    true_vals = true_vals[mask]
+    pred_vals = pred_vals[mask]
+
+    if len(true_vals) < 3:
+        return {
+            "score": -float("inf"),
+            "corr": 0.0,
+            "slope": 0.0,
+            "intercept": 0.0,
+            "slope_penalty": float("inf"),
+            "intercept_penalty": float("inf"),
+            "n": int(len(true_vals)),
+        }
+
+    true_std = _safe_std(true_vals)
+    pred_std = _safe_std(pred_vals)
+
+    if true_std == 0.0 or pred_std == 0.0:
+        corr = 0.0
+        slope = 0.0
+    else:
+        corr = float(np.corrcoef(true_vals, pred_vals)[0, 1])
+        slope = float(np.cov(true_vals, pred_vals, ddof=0)[0, 1] / (true_std ** 2))
+
+    intercept = float(pred_vals.mean() - slope * true_vals.mean())
+    value_scale = max(true_std, pred_std, 1e-12)
+    slope_penalty = abs(np.log(max(abs(slope), 1e-12)))
+    intercept_penalty = abs(intercept) / value_scale
+
+    score = corr - 0.20 * slope_penalty - 0.10 * intercept_penalty
+
+    return {
+        "score": float(score),
+        "corr": float(corr),
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "slope_penalty": float(slope_penalty),
+        "intercept_penalty": float(intercept_penalty),
+        "n": int(len(true_vals)),
+    }
+
+
+def compute_target_overlap_coverage(
+    y_true,
+    y_pred,
+    target_index,
+    target_cols,
+    bins=100,
+    axis_limits=None,
+):
+    target_name = target_cols[target_index]
+    true_vals = _finite_values(y_true[:, target_index])
+    pred_vals = _finite_values(y_pred[:, target_index])
+
+    if len(true_vals) < 3 or len(pred_vals) < 3:
+        return {
+            "score": -float("inf"),
+            "overlap": 0.0,
+            "mean_penalty": float("inf"),
+            "std_penalty": float("inf"),
+            "spread_penalty": float("inf"),
+            "n_true": int(len(true_vals)),
+            "n_pred": int(len(pred_vals)),
+        }
+
+    overlap = compute_target_histogram_overlap(
+        y_true=y_true,
+        y_pred=y_pred,
+        target_index=target_index,
+        target_cols=target_cols,
+        bins=bins,
+        axis_limits=axis_limits,
+    )
+
+    true_std = max(_safe_std(true_vals), 1e-12)
+    pred_std = max(_safe_std(pred_vals), 1e-12)
+    mean_penalty = abs(float(pred_vals.mean() - true_vals.mean())) / true_std
+    std_penalty = abs(np.log(pred_std / true_std))
+
+    true_q_low, true_q_high = np.quantile(true_vals, [0.005, 0.995])
+    pred_q_low, pred_q_high = np.quantile(pred_vals, [0.005, 0.995])
+    true_spread = max(float(true_q_high - true_q_low), 1e-12)
+    pred_spread = max(float(pred_q_high - pred_q_low), 1e-12)
+    spread_penalty = abs(np.log(pred_spread / true_spread))
+
+    score = overlap - 0.10 * mean_penalty - 0.20 * std_penalty - 0.20 * spread_penalty
+
+    return {
+        "score": float(score),
+        "overlap": float(overlap),
+        "mean_penalty": float(mean_penalty),
+        "std_penalty": float(std_penalty),
+        "spread_penalty": float(spread_penalty),
+        "n_true": int(len(true_vals)),
+        "n_pred": int(len(pred_vals)),
+    }
+
+
+def compute_plot_quality_scores(
+    y_true,
+    y_pred,
+    target_cols,
+    bins=100,
+    axis_limits=None,
+):
+    scores = {
+        "scatter": {},
+        "overlap": {},
+    }
+
+    for i, name in enumerate(target_cols):
+        scores["scatter"][name] = compute_target_scatter_linearity(
+            y_true=y_true,
+            y_pred=y_pred,
+            target_index=i,
+        )
+        scores["overlap"][name] = compute_target_overlap_coverage(
+            y_true=y_true,
+            y_pred=y_pred,
+            target_index=i,
+            target_cols=target_cols,
+            bins=bins,
+            axis_limits=axis_limits,
+        )
+
+    return scores
+
+
+def format_plot_quality_report(scores):
+    lines = ["   Plot-quality scores:"]
+
+    lines.append("      Scatter linearity:")
+    for name, metric in scores["scatter"].items():
+        lines.append(
+            f"         {name}: score={metric['score']:.6f} | "
+            f"corr={metric['corr']:.6f} | slope={metric['slope']:.6f} | "
+            f"intercept_penalty={metric['intercept_penalty']:.6f}"
+        )
+
+    lines.append("      Overlap coverage:")
+    for name, metric in scores["overlap"].items():
+        lines.append(
+            f"         {name}: score={metric['score']:.6f} | "
+            f"overlap={metric['overlap']:.6f} | mean_pen={metric['mean_penalty']:.6f} | "
+            f"std_pen={metric['std_penalty']:.6f} | spread_pen={metric['spread_penalty']:.6f}"
+        )
+
+    return "\n".join(lines)
+
+
 def plot_overlap_distributions(
     y_true,
     y_pred,
@@ -231,39 +455,51 @@ def plot_overlap_distributions(
     save_path=None,
     show=True,
     axis_limits=None,
+    central_fraction=0.99,
+    figure_label=None,
 ):
     n_targets = len(target_cols)
-    fig, axes = plt.subplots(1, n_targets, figsize=(5 * n_targets, 4))
-
-    if n_targets == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(2, n_targets, figsize=(5 * n_targets, 8))
+    axes = np.asarray(axes).reshape(2, n_targets)
 
     axis_limits = axis_limits or {}
+    rows = [
+        ("All finite data", 1.0),
+        (f"Central {central_fraction * 100:.0f}%", central_fraction),
+    ]
 
-    for i, name in enumerate(target_cols):
-        ax = axes[i]
+    for row_idx, (row_label, row_fraction) in enumerate(rows):
+        for i, name in enumerate(target_cols):
+            ax = axes[row_idx, i]
 
-        true_vals = y_true[:, i]
-        pred_vals = y_pred[:, i]
+            true_vals = _finite_values(y_true[:, i])
+            pred_vals = _finite_values(y_pred[:, i])
+            axis_limit = axis_limits.get(name)
+            vmin, vmax = _target_axis_range(
+                y_true=y_true,
+                y_pred=y_pred,
+                target_index=i,
+                central_fraction=row_fraction,
+                axis_limit=axis_limit,
+                padded=False,
+            )
 
-        vmin, vmax = get_overlap_plot_range(
-            y_true=y_true,
-            y_pred=y_pred,
-            target_index=i,
-            target_name=name,
-            axis_limits=axis_limits,
-        )
+            if row_fraction < 1.0:
+                true_vals = true_vals[(true_vals >= vmin) & (true_vals <= vmax)]
+                pred_vals = pred_vals[(pred_vals >= vmin) & (pred_vals <= vmax)]
 
-        bin_edges = np.linspace(vmin, vmax, bins + 1)
+            bin_edges = np.linspace(vmin, vmax, bins + 1)
 
-        ax.hist(true_vals, bins=bin_edges, alpha=0.5, label="Actual", density=density)
-        ax.hist(pred_vals, bins=bin_edges, alpha=0.5, label="Predicted", density=density)
+            ax.hist(true_vals, bins=bin_edges, alpha=0.5, label="Actual", density=density)
+            ax.hist(pred_vals, bins=bin_edges, alpha=0.5, label="Predicted", density=density)
 
-        ax.set_title(name)
-        ax.set_xlabel("Value")
-        ax.set_ylabel("Density" if density else "Count")
-        ax.legend()
+            ax.set_xlim(*_pad_range(vmin, vmax))
+            ax.set_title(f"{name} - {row_label}")
+            ax.set_xlabel("Value")
+            ax.set_ylabel("Density" if density else "Count")
+            ax.legend()
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -288,46 +524,63 @@ def plot_pred_vs_true_scatter(
     show=True,
     max_points=5000,
     seed=42,
+    central_fraction=0.99,
+    figure_label=None,
 ):
     n_targets = len(target_cols)
-    fig, axes = plt.subplots(1, n_targets, figsize=(5 * n_targets, 4))
-
-    if n_targets == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(2, n_targets, figsize=(5 * n_targets, 8))
+    axes = np.asarray(axes).reshape(2, n_targets)
 
     n_rows = len(y_true)
-    if n_rows > max_points:
+    if max_points is not None and n_rows > max_points:
         rng = np.random.default_rng(seed=seed)
         plot_idx = rng.choice(n_rows, size=max_points, replace=False)
     else:
         plot_idx = np.arange(n_rows)
 
-    for i, name in enumerate(target_cols):
-        ax = axes[i]
-        true_vals = y_true[plot_idx, i]
-        pred_vals = y_pred[plot_idx, i]
+    rows = [
+        ("All finite data", 1.0),
+        (f"Central {central_fraction * 100:.0f}%", central_fraction),
+    ]
 
-        vmin = min(true_vals.min(), pred_vals.min())
-        vmax = max(true_vals.max(), pred_vals.max())
-        
-        if vmin == vmax:
-            vmin -= 0.5
-            vmax += 0.5
-            
-        if name == "pca_dxy":
-            vmin, vmax = -0.005, 0.005
-            ax.set_xlim(vmin, vmax)
-            ax.set_ylim(vmin, vmax)
-        else:
-            ax.set_xlim(vmin, vmax)
-            ax.set_ylim(vmin, vmax)
-            
-        ax.scatter(true_vals, pred_vals, s=5, alpha=0.25, linewidths=0)
-        ax.plot([vmin, vmax], [vmin, vmax], color="black", linewidth=1.0)
-        ax.set_title(name)
-        ax.set_xlabel("Actual")
-        ax.set_ylabel("Predicted")
+    for row_idx, (row_label, row_fraction) in enumerate(rows):
+        for i, name in enumerate(target_cols):
+            ax = axes[row_idx, i]
+            true_vals = y_true[plot_idx, i]
+            pred_vals = y_pred[plot_idx, i]
+            pair_mask = _finite_pair_mask(true_vals, pred_vals)
+            true_vals = true_vals[pair_mask]
+            pred_vals = pred_vals[pair_mask]
 
+            vmin, vmax = _target_axis_range(
+                y_true=y_true,
+                y_pred=y_pred,
+                target_index=i,
+                central_fraction=row_fraction,
+                padded=False,
+            )
+
+            if row_fraction < 1.0:
+                central_mask = (
+                    (true_vals >= vmin)
+                    & (true_vals <= vmax)
+                    & (pred_vals >= vmin)
+                    & (pred_vals <= vmax)
+                )
+                true_vals = true_vals[central_mask]
+                pred_vals = pred_vals[central_mask]
+
+            x_min, x_max = _pad_range(vmin, vmax)
+            ax.set_xlim(x_min, x_max)
+            ax.set_ylim(x_min, x_max)
+
+            ax.scatter(true_vals, pred_vals, s=5, alpha=0.25, linewidths=0)
+            ax.plot([vmin, vmax], [vmin, vmax], color="black", linewidth=1.0)
+            ax.set_title(f"{name} - {row_label}")
+            ax.set_xlabel("Actual")
+            ax.set_ylabel("Predicted")
+
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -350,6 +603,7 @@ def plot_pull_distributions(
     density=True,
     save_path=None,
     show=True,
+    figure_label=None,
 ):
     if y_sigma is None:
         print("Skipping pull plot because this model did not return sigma/logvar.")
@@ -385,6 +639,7 @@ def plot_pull_distributions(
         ax.set_xlabel("(pred - actual) / sigma")
         ax.set_ylabel("Density" if density else "Count")
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -407,6 +662,7 @@ def plot_distance_distribution(
     density=True,
     save_path=None,
     show=True,
+    figure_label=None,
 ):
     residuals = phi_wrapped_residuals(y_pred, y_true, phi_index)
 
@@ -433,6 +689,7 @@ def plot_distance_distribution(
         ax.axvline(expected, color="black", linewidth=1.0, linestyle="--", label="sqrt(n targets)")
         ax.legend()
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -499,6 +756,7 @@ def make_val_diagnostic_plots(
     show=False,
     axis_limits=None,
     scatter_max_points=5000,
+    central_fraction=0.99,
 ):
     y_pred, y_true, y_sigma = collect_val_predictions_targets_and_sigma(
         model=model,
@@ -529,6 +787,7 @@ def make_val_diagnostic_plots(
         save_path=paths["overlap"],
         show=show,
         axis_limits=axis_limits,
+        central_fraction=central_fraction,
     )
 
     plot_pred_vs_true_scatter(
@@ -538,6 +797,7 @@ def make_val_diagnostic_plots(
         save_path=paths["scatter"],
         show=show,
         max_points=scatter_max_points,
+        central_fraction=central_fraction,
     )
 
     if y_sigma is not None:
@@ -574,6 +834,7 @@ def plot_training_performance(
     history,
     save_path=None,
     show=True,
+    figure_label=None,
 ):
     epochs = history["epoch"]
 
@@ -599,6 +860,7 @@ def plot_training_performance(
     axes[1].set_ylabel("Error")
     axes[1].legend()
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -615,6 +877,7 @@ def plot_learning_rate_history(
     history,
     save_path=None,
     show=True,
+    figure_label=None,
 ):
     fig, ax = plt.subplots(1, 1, figsize=(6, 4))
 
@@ -623,6 +886,7 @@ def plot_learning_rate_history(
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Learning rate")
 
+    _add_figure_label(fig, figure_label)
     plt.tight_layout()
 
     if save_path is not None:
@@ -640,6 +904,7 @@ def make_training_history_plots(
     output_dir="plots",
     prefix="training",
     show=False,
+    figure_label=None,
 ):
     if not history["epoch"]:
         print("Skipping training history plots because no epochs were recorded.")
@@ -656,11 +921,13 @@ def make_training_history_plots(
         history=history,
         save_path=paths["performance"],
         show=show,
+        figure_label=figure_label,
     )
     plot_learning_rate_history(
         history=history,
         save_path=paths["learning_rate"],
         show=show,
+        figure_label=figure_label,
     )
 
     return paths

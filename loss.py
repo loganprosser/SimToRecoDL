@@ -115,8 +115,6 @@ def huber_loss_with_phi(
         0.5 * diff ** 2,
         delta * (abs_diff - 0.5 * delta),
     )
-
-    # 🔥 ADD THIS (Step 5)
     mag_weight = (y.abs() / (y.abs().mean() + eps)).clamp(min=0.5, max=5.0)
     huber = huber * mag_weight
 
@@ -169,7 +167,6 @@ def huber_loss_with_phi(
     l2pred_loss = (pred_stats ** 2).mean()
 
     # -------------------------
-    # 🔥 ADD THIS (Step 6)
     # Residual correlation
     # -------------------------
     residual = pred_stats - y_stats

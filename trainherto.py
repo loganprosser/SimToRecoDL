@@ -17,6 +17,8 @@ from helpers import (
     )
 from helpers_vis import (
     compute_target_histogram_overlap,
+    compute_plot_quality_scores,
+    format_plot_quality_report,
     make_training_history_plots,
     make_val_diagnostic_plots,
     plot_overlap_history,
@@ -24,20 +26,22 @@ from helpers_vis import (
 )
 # TODO use a different learning funciton or play with rate as we go on
 # TODO get a shit ton of data and see if we can acomplish double descent???? (idek if thats possible here)
+# TODO stop training models over and over learn to reuse what you have!
 
 # ====== Running Constants =======
 EPOCHS = 750
 TARGET_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, .01, 1.0], dtype=torch.float32)
 MEAN_WEIGHTS = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0])
 # know that 1 is prob too high of a weighting since this loss is HUGE at small values
-LAMBDA_REL = torch.tensor([0.0, 0.0, 0.0, 100, 0])
 
 # set TARGET_WEIGHTS = None if you want default weighting i.e. [1,1,1,1,1]
 
 BATCH_SIZE = 256
-#HIDDEN_LAYERS = [2048, 2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
+#HIDDEN_LAYERS = [2048, 1024, 512] # new layers try to get double descent!!!! #[256, 256, 64]
 HIDDEN_LAYERS = [512, 512, 256] #maybe add residuals
 CRITERION = hetero_gaussian_nll_with_phi # paper_hetero_loss, hetero_gaussian_nll_with_phi, hetero_gaussian_nll_with_phi_relative
+BATCH_NORM = False
+DROPOUT = 0.0
 
 # ====== Running Flags =======
 CHECK_SHAPE = False
@@ -48,21 +52,28 @@ PRINT_FINAL_VAL_SAMPLES = True
 TRACK_GOLDEN = True
 PLOT_VAL_DISTRIBUTIONS = True
 PLOT_TRAINING_HISTORY = True
-TRACK_BEST_OVERLAP = True
-PLOT_OVERLAP_HISTORY = True
+TRACK_BEST_OVERLAP = False
+PLOT_OVERLAP_HISTORY = False
 
 # ====== Overlap tracking settings ======
-FAST_PREFIX = 4
+FAST_PREFIX = "BEST"
+ACTUAL_PREFIX = "hetero"
 OVERLAP_TARGET_INDEX = 3
-OVERLAP_MODEL_DIR = f"{FAST_PREFIX}maxoverlapd0"
+OVERLAP_MODEL_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_maxoverlapd0"
 
 #1: [5x .25] 2: [5x 1.0] 3: [0,0,0,.5,.1]
 
 # ====== Golden model settings ======
-GOLDEN_MODEL_DIR = f"{FAST_PREFIX}goldenmodels"
-GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}goldeniteration.txt"
-PLOT_DIR = f"{FAST_PREFIX}plots"
-PLOT_PREFIX = f"{FAST_PREFIX}relative_loss_hetero"
+GOLDEN_MODEL_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_goldenmodels"
+GOLDEN_SUMMARY_FILE = f"{FAST_PREFIX}{ACTUAL_PREFIX}_goldeniteration.txt"
+PLOT_DIR = f"{FAST_PREFIX}{ACTUAL_PREFIX}_plots"
+PLOT_PREFIX = f"{FAST_PREFIX}{ACTUAL_PREFIX}_relative_loss_hetero"
+DIAGNOSTIC_CENTRAL_FRACTION = 0.99
+DIAGNOSTIC_SCATTER_MAX_POINTS = None
+GOLDEN_SCATTER_PREFIX = "best_scatter_linear_"
+GOLDEN_OVERLAP_PREFIX = "best_overlap_cover_"
+PRINT_FULL_EPOCH_REPORT = False
+PRINT_GOLDEN_UPDATE_DETAILS = False
 
 # ===== Picking Device ========
 '''
@@ -127,8 +138,8 @@ model = HeteroTrackNet(
     input_dim=input_dim,
     hidden_layers=HIDDEN_LAYERS,
     output_dim=5,
-    use_batchnorm=True,
-    dropout=0.10,
+    use_batchnorm=BATCH_NORM,
+    dropout=DROPOUT,
     activation=nn.ReLU
 )
 model.to(device)
@@ -195,8 +206,8 @@ def build_checkpoint_metadata(report_text=None):
         "x_mean": x_mean,
         "x_std": x_std,
         "hidden_layers": HIDDEN_LAYERS,
-        "use_batchnorm": True,
-        "dropout": 0.10,
+        "use_batchnorm": BATCH_NORM,
+        "dropout": DROPOUT,
         "activation": "ReLU",
         "batch_size": BATCH_SIZE,
         "seed": SEED,
@@ -213,20 +224,26 @@ def build_checkpoint_metadata(report_text=None):
 
     return metadata
 
+
+def get_golden_plot_location(metric_name):
+    for metric_prefix in (GOLDEN_SCATTER_PREFIX, GOLDEN_OVERLAP_PREFIX):
+        if metric_name.startswith(metric_prefix):
+            target_name = metric_name[len(metric_prefix):]
+            file_prefix = metric_prefix.rstrip("_")
+            return os.path.join(PLOT_DIR, target_name), file_prefix
+
+    return PLOT_DIR, metric_name
+
+
 if TRAIN:
 
     if TRACK_GOLDEN:
         os.makedirs(GOLDEN_MODEL_DIR, exist_ok=True)
 
-        best_vals = {
-            "best_val_loss": float("inf"),
-            "best_mean_mae": float("inf"),
-            "best_mean_rmse": float("inf"),
-        }
-
+        best_vals = {}
         for name in TARGET_COLS:
-            best_vals[f"best_mae_{name}"] = float("inf")
-            best_vals[f"best_rmse_{name}"] = float("inf")
+            best_vals[f"best_scatter_linear_{name}"] = -float("inf")
+            best_vals[f"best_overlap_cover_{name}"] = -float("inf")
 
         best_reports = {}
 
@@ -362,14 +379,34 @@ if TRAIN:
             f"   Overlap {TARGET_COLS[OVERLAP_TARGET_INDEX]}: "
             f"{target_overlap:.6f} | MAE: {target_mae:.6f}"
         )
+        plot_quality_scores = compute_plot_quality_scores(
+            y_true=overlap_true,
+            y_pred=overlap_pred,
+            target_cols=TARGET_COLS,
+            bins=100,
+        )
+        plot_quality_report = format_plot_quality_report(plot_quality_scores)
 
-        print(report)
-        print(overlap_report)
+        if PRINT_FULL_EPOCH_REPORT:
+            print(report)
+            print(overlap_report)
+            print(plot_quality_report)
+
+        golden_updates = []
 
         # ===== GOLDEN TRACKING =====
         if TRACK_GOLDEN:
 
-            def save(name, value):
+            def save(name, value, metric_details):
+                full_report = f"{report}\n{overlap_report}\n{plot_quality_report}"
+                metadata = build_checkpoint_metadata(report_text=full_report)
+                metadata.update(
+                    {
+                        "metric_tag": name,
+                        "metric_value": float(value),
+                        "plot_quality_metric": metric_details,
+                    }
+                )
                 save_golden_model(
                     model,
                     optimizer,
@@ -377,34 +414,60 @@ if TRAIN:
                     name,
                     value,
                     epoch,
-                    report,
+                    full_report,
                     GOLDEN_MODEL_DIR,
-                    build_checkpoint_metadata(report_text=report)
+                    metadata,
                 )
-                best_reports[name] = report
+                best_reports[name] = full_report
 
-            # overall
-            if val_loss < best_vals["best_val_loss"]:
-                best_vals["best_val_loss"] = val_loss
-                save("best_val_loss", val_loss)
+                golden_output_dir, golden_file_prefix = get_golden_plot_location(name)
+                report_path = os.path.join(golden_output_dir, f"{golden_file_prefix}_training_report.txt")
+                os.makedirs(golden_output_dir, exist_ok=True)
+                with open(report_path, "w") as f:
+                    f.write("GOLDEN PLOT-QUALITY TRAINING REPORT\n")
+                    f.write("=" * 80 + "\n")
+                    f.write(f"metric_tag: {name}\n")
+                    f.write(f"epoch: {epoch + 1}\n")
+                    f.write(f"metric_value: {float(value):.6f}\n")
+                    f.write("\n")
+                    f.write(full_report)
+                    f.write("\n")
 
-            if overall_val_mae < best_vals["best_mean_mae"]:
-                best_vals["best_mean_mae"] = overall_val_mae
-                save("best_mean_mae", overall_val_mae)
+                golden_updates.append(f"{name}={float(value):.6f}")
+                if PRINT_GOLDEN_UPDATE_DETAILS:
+                    print(f"   New golden plot-quality model: {name} = {float(value):.6f} at epoch {epoch + 1}")
+                    print(f"   Saved golden checkpoint: {os.path.join(GOLDEN_MODEL_DIR, f'{name}.pt')}")
+                    print(f"   Saved golden report: {report_path}")
+                    print("   Golden plots will be generated after training finishes.")
 
-            if overall_val_rmse < best_vals["best_mean_rmse"]:
-                best_vals["best_mean_rmse"] = overall_val_rmse
-                save("best_mean_rmse", overall_val_rmse)
+            for target_name in TARGET_COLS:
+                scatter_tag = f"{GOLDEN_SCATTER_PREFIX}{target_name}"
+                scatter_metric = plot_quality_scores["scatter"][target_name]
+                scatter_score = scatter_metric["score"]
+                if scatter_score > best_vals[scatter_tag]:
+                    best_vals[scatter_tag] = scatter_score
+                    save(scatter_tag, scatter_score, scatter_metric)
 
-            # per target
-            for i, name in enumerate(TARGET_COLS):
-                if per_target_mae[i] < best_vals[f"best_mae_{name}"]:
-                    best_vals[f"best_mae_{name}"] = per_target_mae[i]
-                    save(f"best_mae_{name}", per_target_mae[i])
+                overlap_tag = f"{GOLDEN_OVERLAP_PREFIX}{target_name}"
+                overlap_metric = plot_quality_scores["overlap"][target_name]
+                overlap_score = overlap_metric["score"]
+                if overlap_score > best_vals[overlap_tag]:
+                    best_vals[overlap_tag] = overlap_score
+                    save(overlap_tag, overlap_score, overlap_metric)
 
-                if per_target_rmse[i] < best_vals[f"best_rmse_{name}"]:
-                    best_vals[f"best_rmse_{name}"] = per_target_rmse[i]
-                    save(f"best_rmse_{name}", per_target_rmse[i])
+        golden_suffix = ""
+        if TRACK_GOLDEN:
+            golden_suffix = f" | golden updates: {len(golden_updates)}"
+            if golden_updates and PRINT_GOLDEN_UPDATE_DETAILS:
+                golden_suffix += " (" + ", ".join(golden_updates) + ")"
+
+        print(
+            f"Epoch {epoch + 1}/{EPOCHS} | "
+            f"train {train_loss:.6f} | val {val_loss:.6f} | "
+            f"mean MAE {overall_val_mae:.6f} | mean RMSE {overall_val_rmse:.6f} | "
+            f"{TARGET_COLS[OVERLAP_TARGET_INDEX]} overlap {target_overlap:.6f}"
+            f"{golden_suffix}"
+        )
 
         if TRACK_BEST_OVERLAP:
             overlap_improved = (
@@ -457,6 +520,8 @@ if TRAIN:
                     bins=100,
                     density=True,
                     show=False,
+                    scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
+                    central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
                 )
 
                 os.makedirs(PLOT_DIR, exist_ok=True)
@@ -485,6 +550,53 @@ if TRAIN:
                     print(f"      {plot_name}: {plot_path}")
 
         scheduler.step()
+
+    # ===== generate golden plots once at the end =====
+    if TRACK_GOLDEN:
+        final_model_state = {
+            key: value.detach().clone()
+            for key, value in model.state_dict().items()
+        }
+
+        def load_golden_checkpoint(path):
+            try:
+                return torch.load(path, map_location=device, weights_only=False)
+            except TypeError:
+                return torch.load(path, map_location=device)
+
+        print("========== Generating final golden model plots: ==========")
+        for metric_name in best_reports:
+            checkpoint_path = os.path.join(GOLDEN_MODEL_DIR, f"{metric_name}.pt")
+            if not os.path.exists(checkpoint_path):
+                print(f"  Skipping {metric_name}: missing checkpoint {checkpoint_path}")
+                continue
+
+            checkpoint = load_golden_checkpoint(checkpoint_path)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            golden_output_dir, golden_file_prefix = get_golden_plot_location(metric_name)
+
+            golden_plot_paths = make_val_diagnostic_plots(
+                model=model,
+                val_loader=val_loader,
+                device=device,
+                y_mean_t=y_mean_t,
+                y_std_t=y_std_t,
+                target_cols=TARGET_COLS,
+                phi_index=PHI_INDEX,
+                output_dir=golden_output_dir,
+                prefix=golden_file_prefix,
+                bins=100,
+                density=True,
+                show=False,
+                scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
+                central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
+            )
+
+            print(f"  {metric_name}:")
+            for plot_name, plot_path in golden_plot_paths.items():
+                print(f"      {plot_name}: {plot_path}")
+
+        model.load_state_dict(final_model_state)
 
     # ===== write FINAL summary ONLY ONCE =====
     if TRACK_GOLDEN:
@@ -541,7 +653,9 @@ if PLOT_VAL_DISTRIBUTIONS:
         prefix=PLOT_PREFIX,
         bins=100,
         density=True,
-        show=True
+        show=True,
+        scatter_max_points=DIAGNOSTIC_SCATTER_MAX_POINTS,
+        central_fraction=DIAGNOSTIC_CENTRAL_FRACTION,
     )
     print("========== Saved validation diagnostic plots: ==========")
     for plot_name, plot_path in plot_paths.items():
