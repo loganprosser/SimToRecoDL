@@ -28,6 +28,8 @@ from helpers_vis import (
     plot_overlap_distributions,
     plot_pred_vs_true_scatter,
     plot_pull_distributions,
+    plot_residual_distributions,
+    plot_resolution_distributions,
 )
 from loss import hetero_gaussian_nll_with_phi
 from model import HeteroTrackNet
@@ -840,10 +842,12 @@ def make_mode_val_diagnostic_plots(
     paths = {
         "overlap": os.path.join(output_dir, f"{prefix}_overlap.png"),
         "scatter": os.path.join(output_dir, f"{prefix}_scatter_pred_vs_actual.png"),
+        "residual": os.path.join(output_dir, f"{prefix}_residual.png"),
         "distance": os.path.join(output_dir, f"{prefix}_distance.png"),
     }
     if y_sigma is not None:
         paths["pull"] = os.path.join(output_dir, f"{prefix}_pull.png")
+        paths["resolution"] = os.path.join(output_dir, f"{prefix}_resolution.png")
 
     plot_overlap_distributions(
         y_true=y_true,
@@ -864,6 +868,17 @@ def make_mode_val_diagnostic_plots(
         show=show,
         max_points=scatter_max_points,
         central_fraction=central_fraction,
+        figure_label=figure_label,
+    )
+    plot_residual_distributions(
+        y_true=y_true,
+        y_pred=y_pred,
+        target_cols=target_cols,
+        phi_index=phi_index,
+        bins=bins,
+        density=density,
+        save_path=paths["residual"],
+        show=show,
         figure_label=figure_label,
     )
     plot_distance_distribution(
@@ -888,6 +903,15 @@ def make_mode_val_diagnostic_plots(
             bins=bins,
             density=density,
             save_path=paths["pull"],
+            show=show,
+            figure_label=figure_label,
+        )
+        plot_resolution_distributions(
+            y_sigma=y_sigma,
+            target_cols=target_cols,
+            bins=bins,
+            density=density,
+            save_path=paths["resolution"],
             show=show,
             figure_label=figure_label,
         )

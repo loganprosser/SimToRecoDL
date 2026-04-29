@@ -652,6 +652,92 @@ def plot_pull_distributions(
         plt.close(fig)
 
 
+def plot_residual_distributions(
+    y_true,
+    y_pred,
+    target_cols,
+    phi_index,
+    bins=100,
+    density=True,
+    save_path=None,
+    show=True,
+    figure_label=None,
+):
+    residuals = phi_wrapped_residuals(y_pred, y_true, phi_index)
+
+    n_targets = len(target_cols)
+    fig, axes = plt.subplots(1, n_targets, figsize=(5 * n_targets, 4))
+
+    if n_targets == 1:
+        axes = [axes]
+
+    for i, name in enumerate(target_cols):
+        ax = axes[i]
+        vals = residuals[:, i]
+        finite_vals = vals[np.isfinite(vals)]
+
+        ax.hist(finite_vals, bins=bins, alpha=0.75, density=density)
+        ax.axvline(0.0, color="black", linewidth=1.0)
+        ax.set_title(f"{name} residual")
+        ax.set_xlabel("pred - actual")
+        ax.set_ylabel("Density" if density else "Count")
+
+    _add_figure_label(fig, figure_label)
+    plt.tight_layout()
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def plot_resolution_distributions(
+    y_sigma,
+    target_cols,
+    bins=100,
+    density=True,
+    save_path=None,
+    show=True,
+    figure_label=None,
+):
+    if y_sigma is None:
+        print("Skipping resolution plot because this model did not return sigma/logvar.")
+        return
+
+    n_targets = len(target_cols)
+    fig, axes = plt.subplots(1, n_targets, figsize=(5 * n_targets, 4))
+
+    if n_targets == 1:
+        axes = [axes]
+
+    for i, name in enumerate(target_cols):
+        ax = axes[i]
+        vals = y_sigma[:, i]
+        finite_vals = vals[np.isfinite(vals)]
+
+        ax.hist(finite_vals, bins=bins, alpha=0.75, density=density)
+        ax.axvline(0.0, color="black", linewidth=1.0)
+        ax.set_title(f"{name} resolution")
+        ax.set_xlabel("predicted sigma")
+        ax.set_ylabel("Density" if density else "Count")
+
+    _add_figure_label(fig, figure_label)
+    plt.tight_layout()
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def plot_distance_distribution(
     y_true,
     y_pred,
@@ -772,11 +858,13 @@ def make_val_diagnostic_plots(
     paths = {
         "overlap": os.path.join(output_dir, f"{prefix}_overlap.png"),
         "scatter": os.path.join(output_dir, f"{prefix}_scatter_pred_vs_actual.png"),
+        "residual": os.path.join(output_dir, f"{prefix}_residual.png"),
         "distance": os.path.join(output_dir, f"{prefix}_distance.png"),
     }
 
     if y_sigma is not None:
         paths["pull"] = os.path.join(output_dir, f"{prefix}_pull.png")
+        paths["resolution"] = os.path.join(output_dir, f"{prefix}_resolution.png")
 
     plot_overlap_distributions(
         y_true=y_true,
@@ -800,6 +888,17 @@ def make_val_diagnostic_plots(
         central_fraction=central_fraction,
     )
 
+    plot_residual_distributions(
+        y_true=y_true,
+        y_pred=y_pred,
+        target_cols=target_cols,
+        phi_index=phi_index,
+        bins=bins,
+        density=density,
+        save_path=paths["residual"],
+        show=show,
+    )
+
     if y_sigma is not None:
         plot_pull_distributions(
             y_true=y_true,
@@ -810,6 +909,14 @@ def make_val_diagnostic_plots(
             bins=bins,
             density=density,
             save_path=paths["pull"],
+            show=show,
+        )
+        plot_resolution_distributions(
+            y_sigma=y_sigma,
+            target_cols=target_cols,
+            bins=bins,
+            density=density,
+            save_path=paths["resolution"],
             show=show,
         )
     else:
