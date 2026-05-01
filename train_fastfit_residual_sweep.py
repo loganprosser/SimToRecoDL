@@ -26,7 +26,7 @@ from loss import hetero_gaussian_nll_with_phi, hetero_huber_corr_loss
 from model import HeteroTrackNet
 
 DEFAULT_DATA_PATH = base.DEFAULT_DATA_PATH
-DEFAULT_OUTPUT_DIR = "auto_fastfit_residual_sweep"
+DEFAULT_OUTPUT_DIR = "auto_fastfit_residual_sweep2"
 DEFAULT_CACHE_DIR = "auto_fastfit_residual"
 DEFAULT_DEVICE_SLOTS = base.DEFAULT_DEVICE_SLOTS
 DEFAULT_MAX_CONCURRENT = base.DEFAULT_MAX_CONCURRENT
@@ -36,6 +36,10 @@ DEFAULT_BATCH_SIZE = base.BATCH_SIZE
 DEFAULT_SEED = base.SEED
 DEFAULT_VAL_FRACTION = base.VAL_FRACTION
 DEFAULT_MODES = ",".join(base.TRAINING_MODES)
+TARGET_KEY_ORDER = tuple(DEFAULT_TARGET_COLS)
+DXY_TARGET = "pca_dxy"
+DZ_TARGET = "pca_dz"
+PHI_TARGET = "pca_phi"
 
 
 @dataclass(frozen=True)
@@ -98,6 +102,39 @@ DEFAULT_CONFIGS = [
         epochs=220,
         loss_name="hetero_huber_corr",
         activation="silu",
+    ),
+    SweepConfig(
+        name="medium_silu_384x384x192_lr8e4",
+        hidden_layers=(384, 384, 192),
+        lr=8.0e-4,
+        epochs=260,
+        loss_name="gaussian_nll",
+        activation="silu",
+    ),
+    SweepConfig(
+        name="deep_gelu_512x512x512x256_lr6e4",
+        hidden_layers=(512, 512, 512, 256),
+        lr=6.0e-4,
+        epochs=320,
+        loss_name="gaussian_nll",
+        activation="gelu",
+    ),
+    SweepConfig(
+        name="robust_medium_silu_384x256x256_lr7e4",
+        hidden_layers=(384, 256, 256),
+        lr=7.0e-4,
+        epochs=240,
+        loss_name="hetero_huber_corr",
+        activation="silu",
+    ),
+    SweepConfig(
+        name="robust_bn_relu_512x512x256_lr7e4",
+        hidden_layers=(512, 512, 256),
+        lr=7.0e-4,
+        epochs=260,
+        loss_name="hetero_huber_corr",
+        batchnorm=True,
+        dropout=0.05,
     ),
 ]
 
@@ -509,6 +546,71 @@ def format_metric_report(scatter_scores, overlap_scores):
     return "\n".join(lines)
 
 
+def _mean_for_targets(values_by_name, target_names):
+    values = [float(values_by_name[name]) for name in target_names if name in values_by_name]
+    if not values:
+        return float("nan")
+    return float(np.mean(values))
+
+
+def summarize_snapshot_metrics(
+    *,
+    val_loss: float,
+    per_target_mae: np.ndarray,
+    per_target_rmse: np.ndarray,
+    scatter_scores: dict,
+    overlap_scores: dict,
+    fast_scatter: dict,
+    fast_overlap: dict,
+    target_cols: list[str],
+):
+    mae_by_name = {name: float(per_target_mae[idx]) for idx, name in enumerate(target_cols)}
+    rmse_by_name = {name: float(per_target_rmse[idx]) for idx, name in enumerate(target_cols)}
+    scatter_by_name = {name: float(scatter_scores[name]["score"]) for name in target_cols}
+    overlap_by_name = {name: float(overlap_scores[name]["hist_overlap"]) for name in target_cols}
+    fast_scatter_by_name = {name: float(fast_scatter[name]["score"]) for name in target_cols}
+    fast_overlap_by_name = {name: float(fast_overlap[name]["hist_overlap"]) for name in target_cols}
+
+    no_dxy_targets = [name for name in target_cols if name != DXY_TARGET]
+    no_phi_targets = [name for name in target_cols if name != PHI_TARGET]
+
+    summary = {
+        "val_loss": float(val_loss),
+        "mean_mae": float(np.mean(per_target_mae)),
+        "mean_rmse": float(np.mean(per_target_rmse)),
+        "mean_mae_no_dxy": _mean_for_targets(mae_by_name, no_dxy_targets),
+        "mean_rmse_no_dxy": _mean_for_targets(rmse_by_name, no_dxy_targets),
+        "mean_mae_no_phi": _mean_for_targets(mae_by_name, no_phi_targets),
+        "mean_rmse_no_phi": _mean_for_targets(rmse_by_name, no_phi_targets),
+        "mean_scatter_score": _mean_for_targets(scatter_by_name, target_cols),
+        "mean_scatter_no_dxy": _mean_for_targets(scatter_by_name, no_dxy_targets),
+        "mean_hist_overlap": _mean_for_targets(overlap_by_name, target_cols),
+        "mean_overlap_no_dxy": _mean_for_targets(overlap_by_name, no_dxy_targets),
+        "mean_scatter_delta_vs_fastfit": _mean_for_targets(
+            {name: scatter_by_name[name] - fast_scatter_by_name[name] for name in target_cols},
+            target_cols,
+        ),
+        "mean_overlap_delta_vs_fastfit": _mean_for_targets(
+            {name: overlap_by_name[name] - fast_overlap_by_name[name] for name in target_cols},
+            target_cols,
+        ),
+    }
+
+    for name in target_cols:
+        summary[f"{name}_mae"] = mae_by_name[name]
+        summary[f"{name}_rmse"] = rmse_by_name[name]
+        summary[f"{name}_scatter"] = scatter_by_name[name]
+        summary[f"{name}_overlap"] = overlap_by_name[name]
+        summary[f"{name}_scatter_delta_vs_fastfit"] = scatter_by_name[name] - fast_scatter_by_name[name]
+        summary[f"{name}_overlap_delta_vs_fastfit"] = overlap_by_name[name] - fast_overlap_by_name[name]
+
+    return summary
+
+
+def flatten_snapshot_metrics(prefix: str, metrics: dict) -> dict:
+    return {f"{prefix}_{key}": value for key, value in metrics.items()}
+
+
 def build_baseline_comparison_report(y_true, y_pred, y_fast, target_cols):
     model_scatter, model_overlap = collect_metric_scores(y_true, y_pred, target_cols)
     fast_scatter, fast_overlap = collect_metric_scores(y_true, y_fast, target_cols)
@@ -647,11 +749,13 @@ def train_one_experiment(csv_path: Path, output_root: Path, cache_root: Path, ar
     best_val_epoch = 0
     best_val_loss_plot_paths = {}
     best_val_loss_report_path = ""
+    best_val_snapshot_metrics = {}
     best_overall_scatter_score = -float("inf")
     best_overall_scatter_epoch = 0
     best_overall_plot_paths = {}
     best_overall_report_path = ""
     best_overall_checkpoint_path = ""
+    best_overall_snapshot_metrics = {}
 
     for epoch in range(config.epochs):
         model.train()
@@ -733,7 +837,12 @@ def train_one_experiment(csv_path: Path, output_root: Path, cache_root: Path, ar
         y_fast = torch.cat(fast_parts, dim=0).numpy()
 
         scatter_scores, overlap_scores = collect_metric_scores(y_true, y_pred, data.target_cols)
-        baseline_report, _, _, _, _ = build_baseline_comparison_report(y_true, y_pred, y_fast, data.target_cols)
+        baseline_report, model_scatter, model_overlap, fast_scatter, fast_overlap = build_baseline_comparison_report(
+            y_true,
+            y_pred,
+            y_fast,
+            data.target_cols,
+        )
         mean_scatter_score = float(np.mean([metric["score"] for metric in scatter_scores.values()]))
         mean_hist_overlap = float(np.mean([metric["hist_overlap"] for metric in overlap_scores.values()]))
         overlap_target = compute_target_histogram_overlap(
@@ -762,6 +871,16 @@ def train_one_experiment(csv_path: Path, output_root: Path, cache_root: Path, ar
             f"      {data.target_cols[base.OVERLAP_TARGET_INDEX]} overlap: {overlap_target:.6f}"
         )
         full_report = f"{report}\n{overall_report}\n{format_metric_report(scatter_scores, overlap_scores)}\n{baseline_report}"
+        snapshot_metrics = summarize_snapshot_metrics(
+            val_loss=val_loss,
+            per_target_mae=per_target_mae,
+            per_target_rmse=per_target_rmse,
+            scatter_scores=model_scatter,
+            overlap_scores=model_overlap,
+            fast_scatter=fast_scatter,
+            fast_overlap=fast_overlap,
+            target_cols=data.target_cols,
+        )
 
         training_history["epoch"].append(epoch + 1)
         training_history["train_loss"].append(train_loss)
@@ -773,6 +892,7 @@ def train_one_experiment(csv_path: Path, output_root: Path, cache_root: Path, ar
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_val_epoch = epoch + 1
+            best_val_snapshot_metrics = snapshot_metrics.copy()
             metadata = build_checkpoint_metadata(data, input_dim, csv_path, args, config, report_text=full_report)
             metadata.update({"checkpoint_type": "best_val_loss", "val_loss": float(val_loss), "mode": training_mode})
             save_model_checkpoint(str(save_dir / "best_val_loss.pt"), model, optimizer, scheduler, epoch + 1, metadata)
@@ -796,6 +916,7 @@ def train_one_experiment(csv_path: Path, output_root: Path, cache_root: Path, ar
             best_overall_scatter_score = mean_scatter_score
             best_overall_scatter_epoch = epoch + 1
             best_overall_checkpoint_path = str(save_dir / "best_overall.pt")
+            best_overall_snapshot_metrics = snapshot_metrics.copy()
             metadata = build_checkpoint_metadata(data, input_dim, csv_path, args, config, report_text=full_report)
             metadata.update(
                 {
@@ -849,6 +970,16 @@ def train_one_experiment(csv_path: Path, output_root: Path, cache_root: Path, ar
     final_per_target_rmse = np.sqrt(np.mean((y_pred - y_true) ** 2, axis=0))
     final_mean_scatter_score = float(np.mean([metric["score"] for metric in model_scatter.values()]))
     final_mean_hist_overlap = float(np.mean([metric["hist_overlap"] for metric in model_overlap.values()]))
+    final_snapshot_metrics = summarize_snapshot_metrics(
+        val_loss=float(training_history["val_loss"][-1]),
+        per_target_mae=final_per_target_mae,
+        per_target_rmse=final_per_target_rmse,
+        scatter_scores=model_scatter,
+        overlap_scores=model_overlap,
+        fast_scatter=fast_scatter,
+        fast_overlap=fast_overlap,
+        target_cols=data.target_cols,
+    )
     final_epoch_report = format_epoch_report(
         config.epochs - 1,
         config.epochs,
@@ -947,8 +1078,6 @@ def train_one_experiment(csv_path: Path, output_root: Path, cache_root: Path, ar
         "final_val_mean_rmse": float(training_history["val_mean_rmse"][-1]),
         "best_overall_scatter_epoch": int(best_overall_scatter_epoch),
         "best_overall_scatter_score": float(best_overall_scatter_score),
-        "final_mean_scatter_score": float(final_mean_scatter_score),
-        "final_mean_hist_overlap": float(final_mean_hist_overlap),
         "run_dir": str(run_dir),
         "final_plot_dir": str(final_plot_dir),
         "best_val_plot_dir": str(best_val_loss_plot_dir),
@@ -965,6 +1094,9 @@ def train_one_experiment(csv_path: Path, output_root: Path, cache_root: Path, ar
         "best_overall_plot_count": int(len(best_overall_plot_paths)),
         "n_fastfit_failures": int(data.n_fastfit_failures),
     }
+    mode_row.update(flatten_snapshot_metrics("best_val", best_val_snapshot_metrics))
+    mode_row.update(flatten_snapshot_metrics("best_overall", best_overall_snapshot_metrics))
+    mode_row.update(flatten_snapshot_metrics("final", final_snapshot_metrics))
     pd.DataFrame([mode_row]).to_csv(run_dir / "run_summary.csv", index=False)
     return mode_row
 
@@ -1068,33 +1200,155 @@ def run_experiments_concurrently(args, output_root: Path, experiments: list[tupl
         running = still_running
 
 
-def rank_summary_rows(df: pd.DataFrame) -> pd.DataFrame:
+def rank_summary_rows(
+    df: pd.DataFrame,
+    *,
+    lower_is_better: list[str],
+    higher_is_better: list[str],
+    tie_breakers: list[tuple[str, bool]],
+) -> pd.DataFrame:
     ranked = df.copy()
-    ranked["rank_val_loss"] = ranked["best_val_loss"].rank(method="min", ascending=True)
-    ranked["rank_mae"] = ranked["final_val_mean_mae"].rank(method="min", ascending=True)
-    ranked["rank_rmse"] = ranked["final_val_mean_rmse"].rank(method="min", ascending=True)
-    ranked["rank_scatter"] = ranked["final_mean_scatter_score"].rank(method="min", ascending=False)
-    ranked["rank_overlap"] = ranked["final_mean_hist_overlap"].rank(method="min", ascending=False)
-    ranked["rank_score"] = ranked[
-        ["rank_val_loss", "rank_mae", "rank_rmse", "rank_scatter", "rank_overlap"]
-    ].mean(axis=1)
-    ranked = ranked.sort_values(
-        by=["rank_score", "rank_scatter", "rank_overlap", "rank_val_loss"],
-        ascending=[True, True, True, True],
-    ).reset_index(drop=True)
+    rank_columns = []
+
+    for column in lower_is_better:
+        rank_col = f"rank_{column}"
+        ranked[rank_col] = ranked[column].rank(method="min", ascending=True)
+        rank_columns.append(rank_col)
+
+    for column in higher_is_better:
+        rank_col = f"rank_{column}"
+        ranked[rank_col] = ranked[column].rank(method="min", ascending=False)
+        rank_columns.append(rank_col)
+
+    ranked["rank_score"] = ranked[rank_columns].mean(axis=1)
+
+    sort_columns = ["rank_score"]
+    ascending = [True]
+    for column, high_is_better in tie_breakers:
+        sort_columns.append(column)
+        ascending.append(not high_is_better)
+
+    ranked = ranked.sort_values(by=sort_columns, ascending=ascending).reset_index(drop=True)
     ranked.insert(0, "overall_rank", np.arange(1, len(ranked) + 1))
     return ranked
 
 
-def write_summary_text(summary_path: Path, title: str, ranked: pd.DataFrame):
+def rank_balanced_final_rows(df: pd.DataFrame) -> pd.DataFrame:
+    return rank_summary_rows(
+        df,
+        lower_is_better=[
+            "final_mean_mae",
+            "final_mean_rmse",
+            "final_pca_dxy_rmse",
+            "final_pca_dz_rmse",
+            "final_mean_rmse_no_dxy",
+        ],
+        higher_is_better=[
+            "final_mean_overlap_delta_vs_fastfit",
+            "final_mean_hist_overlap",
+            "final_mean_scatter_score",
+        ],
+        tie_breakers=[
+            ("final_mean_rmse", False),
+            ("final_pca_dxy_rmse", False),
+            ("final_mean_overlap_delta_vs_fastfit", True),
+        ],
+    )
+
+
+def rank_best_val_physics_rows(df: pd.DataFrame) -> pd.DataFrame:
+    return rank_summary_rows(
+        df,
+        lower_is_better=[
+            "best_val_val_loss",
+            "best_val_mean_mae",
+            "best_val_mean_rmse",
+            "best_val_pca_dxy_rmse",
+            "best_val_pca_dz_rmse",
+        ],
+        higher_is_better=[
+            "best_val_mean_hist_overlap",
+        ],
+        tie_breakers=[
+            ("best_val_mean_rmse", False),
+            ("best_val_pca_dxy_rmse", False),
+            ("best_val_mean_hist_overlap", True),
+        ],
+    )
+
+
+def rank_fastfit_gain_rows(df: pd.DataFrame) -> pd.DataFrame:
+    return rank_summary_rows(
+        df,
+        lower_is_better=[
+            "final_pca_dxy_rmse",
+            "final_pca_dz_rmse",
+        ],
+        higher_is_better=[
+            "final_mean_overlap_delta_vs_fastfit",
+            "final_mean_scatter_delta_vs_fastfit",
+            "final_pca_dxy_overlap_delta_vs_fastfit",
+            "final_pca_dz_overlap_delta_vs_fastfit",
+        ],
+        tie_breakers=[
+            ("final_mean_overlap_delta_vs_fastfit", True),
+            ("final_pca_dxy_overlap_delta_vs_fastfit", True),
+            ("final_mean_rmse", False),
+        ],
+    )
+
+
+def rank_shape_rows(df: pd.DataFrame) -> pd.DataFrame:
+    return rank_summary_rows(
+        df,
+        lower_is_better=[],
+        higher_is_better=[
+            "final_mean_scatter_score",
+            "final_mean_hist_overlap",
+            "final_mean_scatter_no_dxy",
+            "final_mean_overlap_no_dxy",
+        ],
+        tie_breakers=[
+            ("final_mean_scatter_score", True),
+            ("final_mean_hist_overlap", True),
+            ("final_mean_rmse", False),
+        ],
+    )
+
+
+def rank_legacy_rows(df: pd.DataFrame) -> pd.DataFrame:
+    return rank_summary_rows(
+        df,
+        lower_is_better=["best_val_loss", "final_val_mean_mae", "final_val_mean_rmse"],
+        higher_is_better=["final_mean_scatter_score", "final_mean_hist_overlap"],
+        tie_breakers=[
+            ("final_mean_scatter_score", True),
+            ("final_mean_hist_overlap", True),
+            ("best_val_loss", False),
+        ],
+    )
+
+
+def write_summary_text(summary_path: Path, title: str, ranked: pd.DataFrame, metric_prefix: str):
     lines = [title, "=" * len(title), ""]
     for _, row in ranked.iterrows():
+        final_prefix = metric_prefix
         lines.append(
             f"#{int(row['overall_rank'])} | mode={row['mode']} | config={row['config_name']} | "
-            f"loss={row['loss_name']} | val_loss={row['best_val_loss']:.6f} | "
-            f"mae={row['final_val_mean_mae']:.6f} | rmse={row['final_val_mean_rmse']:.6f} | "
-            f"scatter={row['final_mean_scatter_score']:.6f} | overlap={row['final_mean_hist_overlap']:.6f}"
+            f"loss={row['loss_name']} | "
+            f"{final_prefix}_mae={row[f'{final_prefix}_mean_mae']:.6f} | "
+            f"{final_prefix}_rmse={row[f'{final_prefix}_mean_rmse']:.6f} | "
+            f"{final_prefix}_dxy_rmse={row[f'{final_prefix}_pca_dxy_rmse']:.6f} | "
+            f"{final_prefix}_dz_rmse={row[f'{final_prefix}_pca_dz_rmse']:.6f} | "
+            f"{final_prefix}_scatter={row[f'{final_prefix}_mean_scatter_score']:.6f} | "
+            f"{final_prefix}_overlap={row[f'{final_prefix}_mean_hist_overlap']:.6f}"
         )
+        if f"{final_prefix}_mean_overlap_delta_vs_fastfit" in row:
+            lines.append(
+                f"   delta_vs_fastfit: mean_overlap={row[f'{final_prefix}_mean_overlap_delta_vs_fastfit']:.6f} | "
+                f"mean_scatter={row[f'{final_prefix}_mean_scatter_delta_vs_fastfit']:.6f} | "
+                f"dxy_overlap={row[f'{final_prefix}_pca_dxy_overlap_delta_vs_fastfit']:.6f}"
+            )
         lines.append(f"run_dir: {row['run_dir']}")
         lines.append("")
     summary_path.write_text("\n".join(lines), encoding="utf-8")
@@ -1112,14 +1366,41 @@ def summarize_sweep(output_root: Path):
     all_df = pd.DataFrame(rows)
     all_df.to_csv(summary_dir / "all_runs.csv", index=False)
 
-    ranked_all = rank_summary_rows(all_df)
-    ranked_all.to_csv(summary_dir / "ranked_all_runs.csv", index=False)
-    write_summary_text(summary_dir / "ranked_all_runs.txt", "OVERNIGHT SWEEP RANKING", ranked_all)
+    summary_specs = [
+        ("ranked_balanced_final", "SWEEP2 BALANCED FINAL RANKING", rank_balanced_final_rows, "final"),
+        ("ranked_best_val_physics", "SWEEP2 BEST-VAL PHYSICS RANKING", rank_best_val_physics_rows, "best_val"),
+        ("ranked_fastfit_gain", "SWEEP2 FASTFIT-GAIN RANKING", rank_fastfit_gain_rows, "final"),
+        ("ranked_shape", "SWEEP2 SHAPE RANKING", rank_shape_rows, "final"),
+        ("ranked_legacy", "LEGACY MIXED RANKING", rank_legacy_rows, "final"),
+    ]
+
+    for stem, title, ranker, metric_prefix in summary_specs:
+        ranked_all = ranker(all_df)
+        ranked_all.to_csv(summary_dir / f"{stem}.csv", index=False)
+        write_summary_text(summary_dir / f"{stem}.txt", title, ranked_all, metric_prefix)
 
     for mode, mode_df in all_df.groupby("mode"):
-        ranked_mode = rank_summary_rows(mode_df.reset_index(drop=True))
-        ranked_mode.to_csv(summary_dir / f"ranked_{mode}.csv", index=False)
-        write_summary_text(summary_dir / f"ranked_{mode}.txt", f"{mode.upper()} SWEEP RANKING", ranked_mode)
+        mode_df = mode_df.reset_index(drop=True)
+        for stem, title, ranker, metric_prefix in summary_specs:
+            ranked_mode = ranker(mode_df)
+            ranked_mode.to_csv(summary_dir / f"{stem}_{mode}.csv", index=False)
+            write_summary_text(
+                summary_dir / f"{stem}_{mode}.txt",
+                f"{title} | {mode.upper()}",
+                ranked_mode,
+                metric_prefix,
+            )
+
+    for loss_name, loss_df in all_df.groupby("loss_name"):
+        safe_loss_name = loss_name.replace("/", "_")
+        ranked_loss = rank_balanced_final_rows(loss_df.reset_index(drop=True))
+        ranked_loss.to_csv(summary_dir / f"ranked_balanced_final_{safe_loss_name}.csv", index=False)
+        write_summary_text(
+            summary_dir / f"ranked_balanced_final_{safe_loss_name}.txt",
+            f"SWEEP2 BALANCED FINAL RANKING | LOSS={loss_name}",
+            ranked_loss,
+            "final",
+        )
 
 
 def prepare_mode_caches(csv_path: Path, cache_root: Path, args, modes: list[str]):
